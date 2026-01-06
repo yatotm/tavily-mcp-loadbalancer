@@ -107,6 +107,7 @@
   border-radius: 0;
 }
 
+
 /* Disabled State */
 .el-button.is-disabled,
 .el-button.is-disabled:hover,
@@ -476,4 +477,3 @@
 .el-message--info .el-message__icon {
   color: #64748b !important;
 }
-

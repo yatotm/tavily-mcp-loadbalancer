@@ -71,7 +71,7 @@ describe('useWebSocket', () => {
     socket.triggerOpen()
     expect(isConnected.value).toBe(true)
 
-    socket.triggerMessage({ type: 'stats_update', data: { system: { uptime: 1, sse_connections: 0, ws_connections: 1 }, keys: { total: 0, active: 0, disabled: 0, quota_exceeded: 0 }, requests: { total: 0, success: 0, failed: 0, success_rate: 0, avg_response_time_ms: 0 }, quota: { used: 0, limit: null, remaining: null } }, timestamp: 'now' })
+    socket.triggerMessage({ type: 'stats_update', data: { system: { uptime: 1, sse_connections: 0, ws_connections: 1 }, keys: { total: 0, active: 0, disabled: 0, quota_exceeded: 0, banned: 0 }, requests: { total: 0, success: 0, failed: 0, success_rate: 0, avg_response_time_ms: 0 }, quota: { used: 0, limit: null, remaining: null } }, timestamp: 'now' })
     expect(spy).toHaveBeenCalled()
 
     socket.triggerMessage({ type: 'other_event', data: { foo: 'bar' } })

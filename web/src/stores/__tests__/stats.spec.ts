@@ -12,7 +12,7 @@ describe('stats store', () => {
 
     const overview: StatsOverview = {
       system: { uptime: 10, sse_connections: 2, ws_connections: 1 },
-      keys: { total: 5, active: 4, disabled: 1, quota_exceeded: 0 },
+      keys: { total: 5, active: 4, disabled: 1, quota_exceeded: 0, banned: 0 },
       requests: { total: 100, success: 90, failed: 10, success_rate: 90, avg_response_time_ms: 120 },
       quota: { used: 50, limit: 100, remaining: 50 },
     }
@@ -44,7 +44,7 @@ describe('stats store', () => {
     const store = useStatsStore()
     const overview: StatsOverview = {
       system: { uptime: 20, sse_connections: 0, ws_connections: 2 },
-      keys: { total: 3, active: 2, disabled: 1, quota_exceeded: 0 },
+      keys: { total: 3, active: 2, disabled: 1, quota_exceeded: 0, banned: 0 },
       requests: { total: 50, success: 45, failed: 5, success_rate: 90, avg_response_time_ms: 80 },
       quota: { used: 30, limit: null, remaining: null },
     }

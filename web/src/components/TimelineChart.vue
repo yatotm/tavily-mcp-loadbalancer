@@ -97,12 +97,16 @@ const option = computed<EChartsOption>(() => {
     series: [
       {
         name: 'Requests',
-        type: 'bar',
-        barWidth: '60%',
+        type: 'line',
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 6,
         data: chartData.value.map(item => item.count),
         itemStyle: {
-          color: '#3b82f6',
-          borderRadius: [4, 4, 0, 0]
+          color: '#3b82f6'
+        },
+        areaStyle: {
+          opacity: 0.15
         }
       }
     ]

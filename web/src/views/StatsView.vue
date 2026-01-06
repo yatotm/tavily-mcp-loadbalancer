@@ -49,6 +49,8 @@ const statusType = (status: string) => {
     case 'active':
       return 'success'
     case 'quota_exceeded':
+      return 'warning'
+    case 'banned':
       return 'danger'
     case 'disabled':
     default:
@@ -99,7 +101,7 @@ const quotaStatus = (quota: KeyStatsSummary['quota']) => {
             </template>
           </el-table-column>
 
-          <el-table-column prop="status" label="状态" width="100">
+          <el-table-column prop="status" label="状态" width="130">
             <template #default="{ row }">
               <el-tag :type="statusType(row.status)" size="small">
                 {{ row.status }}

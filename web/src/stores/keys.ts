@@ -38,6 +38,13 @@ export interface KeyCreatePayload {
   max_errors?: number
 }
 
+export interface TestResult {
+  id: number
+  status: 'success' | 'error'
+  error_type?: 'auth' | 'network' | null
+  error_message?: string | null
+}
+
 export const useKeysStore = defineStore('keys', () => {
   const keys = ref<KeyRecord[]>([])
   const api = useApi()
@@ -90,6 +97,23 @@ export const useKeysStore = defineStore('keys', () => {
     }
   }
 
+  const batchEnable = async (ids: number[]) => {
+    await api.post('/api/keys/batch/enable', { ids })
+    const selected = new Set(ids)
+    keys.value = keys.value.map((key) => (selected.has(key.id) ? { ...key, status: 'active' } : key))
+  }
+
+  const batchDisable = async (ids: number[]) => {
+    await api.post('/api/keys/batch/disable', { ids })
+    const selected = new Set(ids)
+    keys.value = keys.value.map((key) => (selected.has(key.id) ? { ...key, status: 'disabled' } : key))
+  }
+
+  const batchTest = async (ids: number[]): Promise<TestResult[]> => {
+    const data = await api.post<{ results: TestResult[] }>('/api/keys/batch/test', { ids })
+    return data.results || []
+  }
+
   return {
     keys,
     fetchKeys,
@@ -100,5 +124,8 @@ export const useKeysStore = defineStore('keys', () => {
     resetErrors,
     importKeys,
     updateKey,
+    batchEnable,
+    batchDisable,
+    batchTest,
   }
 })

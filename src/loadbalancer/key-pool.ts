@@ -80,7 +80,7 @@ export class KeyPool {
 
     if (incrementError && maxErrors && nextErrors >= maxErrors) {
       const currentStatus = this.getKeyValue(keyId, 'status');
-      if (currentStatus !== 'quota_exceeded') {
+      if (currentStatus !== 'quota_exceeded' && currentStatus !== 'banned') {
         this.updateStatus(keyId, 'disabled');
         logger.warn('API key disabled after exceeding max errors', { keyId, maxErrors });
       }

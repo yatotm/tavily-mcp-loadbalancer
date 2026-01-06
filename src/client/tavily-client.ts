@@ -7,6 +7,7 @@ import { UsageClient } from './usage-client.js';
 import { defaultRetryConfig, computeDelay, sleep, RetryConfig } from './retry-handler.js';
 import { getRuntimeConfig } from '../utils/runtime-config.js';
 import { EventBus } from '../core/event-bus.js';
+import { logger } from '../utils/logger.js';
 
 interface QueuedRequest<T> {
   execute: () => Promise<T>;
@@ -110,6 +111,36 @@ export class TavilyClient {
     return tool;
   }
 
+  private calculateCredits(toolName: string, params: Record<string, unknown>): number {
+    const tool = this.normalizeToolName(toolName);
+
+    switch (tool) {
+      case 'search': {
+        const depth = params.search_depth as string | undefined;
+        return depth === 'advanced' ? 2 : 1;
+      }
+      case 'extract': {
+        const depth = params.extract_depth as string | undefined;
+        const urls = Array.isArray(params.urls) ? params.urls.length : 0;
+        const creditsPerBatch = depth === 'advanced' ? 2 : 1;
+        return Math.ceil(urls / 5) * creditsPerBatch;
+      }
+      case 'crawl': {
+        const depth = params.extract_depth as string | undefined;
+        const limit = typeof params.limit === 'number' ? params.limit : 50;
+        const mapCredits = Math.ceil(limit / 10);
+        const extractCredits = Math.ceil(limit / 5) * (depth === 'advanced' ? 2 : 1);
+        return mapCredits + extractCredits;
+      }
+      case 'map': {
+        const limit = typeof params.limit === 'number' ? params.limit : 50;
+        return Math.ceil(limit / 10);
+      }
+      default:
+        return 1;
+    }
+  }
+
   private async makeRequest(toolName: string, endpoint: string, params: Record<string, unknown>): Promise<any> {
     return this.enqueueRequest(async () => {
       const startTotal = Date.now();
@@ -129,6 +160,10 @@ export class TavilyClient {
         };
 
         try {
+          logger.debug('Tavily API request', {
+            endpoint,
+            params: { ...params, api_key: '***' },
+          });
           const response = await this.axiosInstance.post(endpoint, payload, {
             timeout: this.getTimeoutMs(),
             headers: {
@@ -142,7 +177,8 @@ export class TavilyClient {
           }
 
           this.keyPool.markSuccess(key.id);
-          this.db.incrementMonthlyUsage(key.id, this.normalizeToolName(toolName));
+          const creditCount = this.calculateCredits(toolName, params);
+          this.db.incrementMonthlyUsage(key.id, this.normalizeToolName(toolName), creditCount);
 
           // 限制响应数据大小（最多50KB）
           let responseDataStr: string | null = null;
@@ -181,29 +217,55 @@ export class TavilyClient {
             classification = classifyError(error, responseData, status, retryAfter);
           }
 
-          // If we hit a 429 without explicit quota message, double check usage to avoid disabling incorrectly
-          if (classification.type === 'rate_limit' && status === 429) {
+          if (status === 401 || status === 403 || status === 432 || status === 433) {
+            classification = {
+              ...classification,
+              type: 'auth',
+              shouldRetry: false,
+              shouldDisableKey: true,
+              message: classification.message || 'Invalid or disabled API key',
+              incrementErrorCount: true,
+            };
+          }
+
+          if (status === 429) {
+            let remaining = Infinity;
             try {
-              const usage = await this.usageClient.fetchUsage(key.key_value);
-              const remaining = usage.account.plan_limit !== null ? usage.account.plan_limit - usage.account.plan_usage : Infinity;
-              if (remaining <= 0) {
-                classification = {
-                  ...classification,
-                  type: 'quota_exceeded',
-                  shouldRetry: false,
-                  shouldDisableKey: true,
-                  message: 'API quota exceeded',
-                  incrementErrorCount: true,
-                };
-              }
-              await this.usageClient.syncUsageForKey(key.id, key.key_value);
+              const usage = await this.usageClient.fetchUsageAndSync(key.id, key.key_value);
+              remaining = usage.account.plan_limit !== null
+                ? usage.account.plan_limit - usage.account.plan_usage
+                : Infinity;
             } catch {
               // ignore usage sync errors
+            }
+
+            if (remaining <= 0) {
+              classification = {
+                ...classification,
+                type: 'quota_exceeded',
+                shouldRetry: false,
+                shouldDisableKey: true,
+                message: 'API quota exceeded',
+                incrementErrorCount: true,
+              };
+            } else {
+              classification = {
+                ...classification,
+                type: 'rate_limit',
+                shouldRetry: true,
+                shouldDisableKey: false,
+                message: 'Rate limited, will retry',
+                incrementErrorCount: false,
+              };
             }
           }
 
           if (classification.shouldDisableKey) {
-            const statusToSet = classification.type === 'quota_exceeded' ? 'quota_exceeded' : 'disabled';
+            const statusToSet = classification.type === 'quota_exceeded'
+              ? 'quota_exceeded'
+              : classification.type === 'auth'
+                ? 'banned'
+                : 'disabled';
             this.keyPool.updateStatus(key.id, statusToSet);
           }
 

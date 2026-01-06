@@ -12,6 +12,7 @@ export interface KeySummaryStats {
   active: number
   disabled: number
   quota_exceeded: number
+  banned: number
 }
 
 export interface RequestStats {

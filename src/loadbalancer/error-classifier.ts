@@ -31,6 +31,16 @@ const extractMessage = (data: unknown): string => {
   return String(data);
 };
 
+const extractDetailMessage = (detail: unknown): string => {
+  if (!detail) return '';
+  if (typeof detail === 'string') return detail;
+  if (typeof detail === 'object') {
+    const message = (detail as any).error || (detail as any).message || (detail as any).detail;
+    return message ? String(message) : '';
+  }
+  return String(detail);
+};
+
 const isQuotaMessage = (message: string): boolean => {
   const text = message.toLowerCase();
   return text.includes('quota') || text.includes('exceed') || text.includes('credit') || text.includes('usage limit');
@@ -72,7 +82,7 @@ export const classifyError = (
       };
     }
 
-    if (status === 401 || status === 403) {
+    if (status === 401 || status === 403 || status === 432 || status === 433) {
       return {
         type: 'auth',
         shouldRetry: false,
@@ -150,7 +160,9 @@ export const classifyError = (
 
 export const classifyResponsePayload = (payload: unknown): ErrorClassification | null => {
   if (!payload || typeof payload !== 'object') return null;
-  const message = extractMessage(payload);
+  if (!('detail' in payload)) return null;
+  const detail = (payload as { detail?: unknown }).detail;
+  const message = extractDetailMessage(detail);
   if (!message) return null;
   if (isQuotaMessage(message)) {
     return {

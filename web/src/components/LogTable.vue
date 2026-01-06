@@ -52,7 +52,7 @@ const handleRowClick = (row: LogEntry) => {
         </template>
       </el-table-column>
 
-      <el-table-column prop="tool" label="工具" width="100">
+      <el-table-column prop="tool" label="工具" width="130">
         <template #default="{ row }">
           <el-tag size="small">{{ row.tool }}</el-tag>
         </template>

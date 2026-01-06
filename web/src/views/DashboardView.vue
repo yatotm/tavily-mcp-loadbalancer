@@ -145,12 +145,16 @@ const quotaLimit = computed(() => {
             <span class="value">{{ keysSummary.active }}</span>
           </div>
           <div class="key-stat-item">
-            <span class="label warning">已禁用</span>
+            <span class="label info">已禁用</span>
             <span class="value">{{ keysSummary.disabled }}</span>
           </div>
           <div class="key-stat-item">
-            <span class="label danger">超额</span>
+            <span class="label warning">超额</span>
             <span class="value">{{ keysSummary.quota_exceeded }}</span>
+          </div>
+          <div class="key-stat-item">
+            <span class="label danger">封禁</span>
+            <span class="value">{{ keysSummary.banned }}</span>
           </div>
         </div>
         <el-skeleton v-else :rows="3" />
@@ -228,6 +232,7 @@ const quotaLimit = computed(() => {
 }
 
 .key-stat-item .label.success { color: var(--color-success); }
+.key-stat-item .label.info { color: var(--color-text-secondary); }
 .key-stat-item .label.warning { color: var(--color-warning); }
 .key-stat-item .label.danger { color: var(--color-danger); }
 .key-stat-item .value { font-weight: bold; }

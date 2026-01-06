@@ -6,7 +6,7 @@ import { decryptSecret, encryptSecret, hashKey } from '../utils/crypto.js';
 import { logger } from '../utils/logger.js';
 import { getCurrentQuotaPeriod, toIsoString } from '../utils/date.js';
 
-export type KeyStatus = 'active' | 'disabled' | 'quota_exceeded';
+export type KeyStatus = 'active' | 'disabled' | 'quota_exceeded' | 'banned';
 
 export interface ApiKeyRecord {
   id: number;
@@ -349,7 +349,7 @@ export class AppDatabase {
       .run(params.quotaLimit, params.usedCount, params.resetAt ?? existing.reset_at, now, existing.id);
   }
 
-  incrementMonthlyUsage(keyId: number, tool: string): void {
+  incrementMonthlyUsage(keyId: number, tool: string, count: number = 1): void {
     const yearMonth = getCurrentQuotaPeriod();
     const record = this.ensureMonthlyQuota(keyId, yearMonth);
     const now = toIsoString();
@@ -363,12 +363,12 @@ export class AppDatabase {
     this.db
       .prepare(`
         UPDATE monthly_quotas
-        SET used_count = used_count + 1,
-            ${column} = ${column} + 1,
+        SET used_count = used_count + ?,
+            ${column} = ${column} + ?,
             updated_at = ?
         WHERE id = ?
       `)
-      .run(now, record.id);
+      .run(count, count, now, record.id);
   }
 
   getMonthlyQuotas(yearMonth: string): MonthlyQuotaRecord[] {

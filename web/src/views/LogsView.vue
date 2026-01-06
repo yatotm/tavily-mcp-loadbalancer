@@ -192,6 +192,7 @@ onMounted(() => {
       v-model="showDetailDialog"
       title="请求详情"
       width="700px"
+      align-center
       :close-on-click-modal="true"
     >
       <div v-loading="detailLoading">

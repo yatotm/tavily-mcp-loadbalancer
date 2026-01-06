@@ -31,9 +31,10 @@ defineEmits<{
       <slot name="actions">
         <!-- Default actions if not overridden -->
         <el-tooltip content="同步配额" placement="bottom">
-          <el-button circle :loading="syncing" @click="$emit('sync')">
-            <el-icon v-if="!syncing"><Refresh /></el-icon>
-          </el-button>
+          <button class="sync-btn" :disabled="syncing" @click="$emit('sync')">
+            <span v-if="syncing" class="sync-spinner"></span>
+            <el-icon v-else><Refresh /></el-icon>
+          </button>
         </el-tooltip>
       </slot>
     </div>
@@ -109,5 +110,49 @@ defineEmits<{
   .page-subtitle {
     display: none;
   }
+}
+
+/* Sync button - native button with custom spinner */
+.sync-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.sync-btn:hover:not(:disabled) {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.sync-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.sync-btn .el-icon {
+  font-size: 16px;
+}
+
+/* Custom spinner - guaranteed centered */
+.sync-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #e5e7eb;
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: sync-spin 0.6s linear infinite;
+}
+
+@keyframes sync-spin {
+  to { transform: rotate(360deg); }
 }
 </style>

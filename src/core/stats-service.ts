@@ -11,6 +11,7 @@ export class StatsService {
     const activeKeys = keys.filter((key) => key.status === 'active').length;
     const disabledKeys = keys.filter((key) => key.status === 'disabled').length;
     const quotaKeys = keys.filter((key) => key.status === 'quota_exceeded').length;
+    const bannedKeys = keys.filter((key) => key.status === 'banned').length;
 
     const yearMonth = getCurrentQuotaPeriod();
     const quotas = this.db.getMonthlyQuotas(yearMonth);
@@ -37,6 +38,7 @@ export class StatsService {
         active: activeKeys,
         disabled: disabledKeys,
         quota_exceeded: quotaKeys,
+        banned: bannedKeys,
       },
       requests: {
         total: totalRequests,

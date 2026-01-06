@@ -1,4 +1,5 @@
 import express from 'express';
+import axios from 'axios';
 import { AppDatabase } from '../data/database.js';
 import { KeyPool } from '../loadbalancer/key-pool.js';
 import { UsageClient } from '../client/usage-client.js';
@@ -137,6 +138,80 @@ export class ApiRouter {
         .filter(Boolean) as Array<{ keyValue: string; displayName?: string }>;
       const inserted = this.keyPool.importKeys(formatted);
       res.json({ inserted });
+    });
+
+    this.router.post('/keys/batch/enable', (req, res) => {
+      const { ids } = req.body || {};
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: 'ids array is required' });
+      }
+      const uniqueIds = Array.from(new Set(ids.map((id: any) => Number(id)).filter((id: number) => Number.isFinite(id))));
+      uniqueIds.forEach((id) => {
+        this.keyPool.updateStatus(id, 'active');
+        this.eventBus.emitEvent('key_status', { id, status: 'active' });
+      });
+      res.json({ updated: uniqueIds.length });
+    });
+
+    this.router.post('/keys/batch/disable', (req, res) => {
+      const { ids } = req.body || {};
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: 'ids array is required' });
+      }
+      const uniqueIds = Array.from(new Set(ids.map((id: any) => Number(id)).filter((id: number) => Number.isFinite(id))));
+      uniqueIds.forEach((id) => {
+        this.keyPool.updateStatus(id, 'disabled');
+        this.eventBus.emitEvent('key_status', { id, status: 'disabled' });
+      });
+      res.json({ updated: uniqueIds.length });
+    });
+
+    this.router.post('/keys/batch/test', async (req, res) => {
+      const { ids } = req.body || {};
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: 'ids array is required' });
+      }
+      const uniqueIds = Array.from(new Set(ids.map((id: any) => Number(id)).filter((id: number) => Number.isFinite(id))));
+      const results: Array<{ id: number; status: 'success' | 'error'; error_type?: string | null; error_message?: string | null }> = [];
+
+      for (const id of uniqueIds) {
+        let key;
+        try {
+          key = this.db.getApiKeyById(id);
+        } catch (error: any) {
+          results.push({ id, status: 'error', error_message: error?.message || 'Key not found', error_type: null });
+          continue;
+        }
+
+        const startedAt = Date.now();
+        try {
+          const usage = await this.usageClient.fetchUsage(key.key_value);
+          this.logUsageResult({
+            keyId: key.id,
+            toolName: 'test',
+            responseStatus: 'success',
+            responseData: usage,
+            responseTimeMs: Date.now() - startedAt,
+            errorType: null,
+            errorMessage: null,
+          });
+          results.push({ id: key.id, status: 'success' });
+        } catch (error: unknown) {
+          const { errorType, errorMessage, responseData } = this.parseUsageError(error);
+          this.logUsageResult({
+            keyId: key.id,
+            toolName: 'test',
+            responseStatus: 'error',
+            responseData,
+            responseTimeMs: Date.now() - startedAt,
+            errorType,
+            errorMessage,
+          });
+          results.push({ id: key.id, status: 'error', error_type: errorType, error_message: errorMessage });
+        }
+      }
+
+      res.json({ results });
     });
 
     this.router.get('/keys/:id', (req, res) => {
@@ -320,10 +395,90 @@ export class ApiRouter {
 
     this.router.post('/settings/sync', async (req, res) => {
       const keys = this.db.getApiKeys();
+      const results: Array<{ id: number; status: 'success' | 'error'; error_type?: string | null; error_message?: string | null }> = [];
       for (const key of keys) {
-        await this.usageClient.syncUsageForKey(key.id, key.key_value);
+        const startedAt = Date.now();
+        try {
+          const usage = await this.usageClient.fetchUsageAndSync(key.id, key.key_value);
+          this.logUsageResult({
+            keyId: key.id,
+            toolName: 'sync_quota',
+            responseStatus: 'success',
+            responseData: usage,
+            responseTimeMs: Date.now() - startedAt,
+            errorType: null,
+            errorMessage: null,
+          });
+          results.push({ id: key.id, status: 'success' });
+        } catch (error: unknown) {
+          const { errorType, errorMessage, responseData } = this.parseUsageError(error);
+          this.logUsageResult({
+            keyId: key.id,
+            toolName: 'sync_quota',
+            responseStatus: 'error',
+            responseData,
+            responseTimeMs: Date.now() - startedAt,
+            errorType,
+            errorMessage,
+          });
+          results.push({ id: key.id, status: 'error', error_type: errorType, error_message: errorMessage });
+        }
       }
-      res.json({ status: 'ok' });
+      res.json({ status: 'ok', results });
+    });
+  }
+
+  private stringifyLogData(data: unknown): string | null {
+    if (data === undefined || data === null) return null;
+    try {
+      const json = JSON.stringify(data);
+      return json.length > 50000 ? `${json.slice(0, 50000)}...(truncated)` : json;
+    } catch {
+      return null;
+    }
+  }
+
+  private parseUsageError(error: unknown): { errorType: 'auth' | 'network' | null; errorMessage: string | null; responseData: unknown } {
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      const data = error.response?.data as any;
+      const detail = data?.detail;
+      const message =
+        (typeof detail === 'string' && detail) ||
+        (detail && typeof detail === 'object' && (detail.error || detail.message || detail.detail)) ||
+        data?.error ||
+        data?.message ||
+        error.message;
+      const errorType = status === 401 || status === 403 ? 'auth' : 'network';
+      return {
+        errorType,
+        errorMessage: message ? String(message) : error.message,
+        responseData: data ?? null,
+      };
+    }
+
+    const message = error instanceof Error ? error.message : error ? String(error) : null;
+    return { errorType: 'network', errorMessage: message, responseData: null };
+  }
+
+  private logUsageResult(params: {
+    keyId: number | null;
+    toolName: 'test' | 'sync_quota';
+    responseStatus: 'success' | 'error';
+    responseData: unknown;
+    responseTimeMs: number;
+    errorType: 'auth' | 'network' | null;
+    errorMessage: string | null;
+  }): void {
+    this.db.insertRequestLog({
+      key_id: params.keyId,
+      tool_name: params.toolName,
+      request_params: null,
+      response_data: this.stringifyLogData(params.responseData),
+      response_status: params.responseStatus,
+      response_time_ms: params.responseTimeMs,
+      error_type: params.errorType,
+      error_message: params.errorMessage,
     });
   }
 }

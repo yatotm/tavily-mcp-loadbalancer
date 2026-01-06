@@ -2,6 +2,7 @@ import { toolDefinitions } from './definitions.js';
 import { TavilyClient } from '../../client/tavily-client.js';
 import { formatResults, formatCrawlResults, formatMapResults } from '../../client/response-formatter.js';
 import { getRuntimeConfig } from '../../utils/runtime-config.js';
+import { logger } from '../../utils/logger.js';
 
 const removeEmpty = (params: Record<string, unknown>): Record<string, unknown> => {
   const cleaned: Record<string, unknown> = {};
@@ -60,6 +61,10 @@ export class ToolRouter {
         }
 
         const cleaned = removeEmpty(payload);
+        logger.info('Search request params', {
+          search_depth: args?.search_depth,
+          cleaned_search_depth: cleaned.search_depth,
+        });
         const response = await this.tavilyClient.search(cleaned);
         return {
           content: [{ type: 'text', text: formatResults(response) }],
