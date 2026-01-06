@@ -56,3 +56,24 @@ temp/
 
 # Claude AI files
 CLAUDE.md
+
+# Claude local config
+.claude/
+web/.claude/
+
+# SQLite database files
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# Frontend dependencies and build artifacts
+web/node_modules/
+web/coverage/
+web/dist/
+
+# Auto-generated type files
+web/src/auto-imports.d.ts
+web/src/components.d.ts
+
+# Development docs
+PRD.md

@@ -1,20 +1,22 @@
 services:
   tavily-mcp-loadbalancer:
-    build: .
-    image: yatotm1994/tavily-mcp-loadbalancer:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # image: yatotm1994/tavily-mcp-loadbalancer:latest  # 调试完成后取消注释
     ports:
       - "60002:60002"
     environment:
-      # 替换为你的实际API密钥，多个密钥用逗号分隔
+      # 替换为你的实际API密钥，多个密钥用逗号分隔（首次种子导入）
       - TAVILY_API_KEYS=${TAVILY_API_KEYS:-}
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
-      - SUPERGATEWAY_PORT=60002
-      - SUPERGATEWAY_BASE_URL=http://0.0.0.0:60002
-      - SUPERGATEWAY_SSE_PATH=/sse
-      - SUPERGATEWAY_MESSAGE_PATH=/message
+      - PORT=60002
+      - DATABASE_PATH=/app/data/tavily.db
+      - DATABASE_ENCRYPTION_KEY=${DATABASE_ENCRYPTION_KEY:?DATABASE_ENCRYPTION_KEY required}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - ENABLE_WEB_UI=true
     volumes:
-      # 如果需要持久化日志，可以挂载日志目录
-      - ./logs:/app/logs
+      - ./data:/app/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e", "const http = require('http'); const options = { host: 'localhost', port: 60002, path: '/health', timeout: 2000 }; const req = http.request(options, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => process.exit(1)); req.end();"]

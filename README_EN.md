@@ -12,6 +12,13 @@ A Tavily MCP server with multi-API key load balancing support, providing both SS
 <summary>📋 Changelog</summary>
 
 
+### v3.0.0 (2025-12-30)
+- 🧩 **Official MCP parity**: Fully aligned with tavily-mcp v0.2.12 tool schemas & behavior
+- 🧠 **Smart error handling**: Differentiates quota exhaustion, rate limits, and network errors
+- 🗄️ **Persistent storage**: SQLite for keys, quotas, and request logs
+- 🖥️ **Web Admin UI**: Dashboard, key management, stats, logs, settings
+- 🔁 **Auto quota refresh**: Monthly UTC quota reset handling
+
 ### v2.2.0 (2025-08-15)
 - 🧬 Multi-arch images: released linux/amd64 and linux/arm64; `latest` now points to `2.2.0`
 
@@ -36,14 +43,13 @@ A Tavily MCP server with multi-API key load balancing support, providing both SS
 
 ## ✨ Features
 
-- 🔄 **Smart Load Balancing**: Automatic API key rotation for improved concurrency
-- 🛡️ **Auto Failover**: Intelligent detection and disabling of failed keys
-- 🌐 **Multi-Protocol Support**: Simultaneous support for SSE and streamableHTTP interfaces
-- 🧬 **Multi-Architecture Images**: Single image supports both linux/amd64 and linux/arm64
-- 🛠️ **Complete Toolset**: Support for search, extract, crawl, map and all Tavily tools
-- 📊 **Real-time Monitoring**: Detailed key usage logs and performance statistics
-- 🔒 **Data Security**: Automatic response cleaning and validation
-- ⚡ **High Performance**: Built on TypeScript and modern Node.js architecture
+- 🔄 **Smart Load Balancing**: Weighted rotation for high availability
+- 🧠 **Error Classification**: Precise handling for rate-limit vs quota exhaustion
+- 🌐 **Multi-Protocol Support**: MCP stdio + SSE + streamableHTTP
+- 🗄️ **Persistent Storage**: SQLite-backed keys, quotas, logs
+- 🖥️ **Web Admin UI**: Visual management for keys, stats, logs, settings
+- 📊 **Real-time Updates**: WebSocket push for stats refresh
+- 🔒 **Data Security**: Encrypted key storage with masked display
 
 ## 🚀 Quick Start
 
@@ -54,6 +60,8 @@ A Tavily MCP server with multi-API key load balancing support, providing both SS
 docker run -d \
   --name tavily-mcp-lb \
   -p 60002:60002 \
+  -e DATABASE_ENCRYPTION_KEY="your-32-byte-random-key" \
+  -e ADMIN_PASSWORD="optional-admin-password" \
   -e TAVILY_API_KEYS="your-key1,your-key2,your-key3" \
   yatotm1994/tavily-mcp-loadbalancer:latest
 ```
@@ -68,16 +76,20 @@ npm install
 
 # 2. Configure environment variables
 cp .env.example .env
-# Edit .env file with your API keys
+# Edit .env: set DATABASE_ENCRYPTION_KEY (required), ADMIN_PASSWORD (optional)
 
-# 3. Start service
+# 3. Start service (HTTP + Admin UI)
 npm run build-and-start
 ```
 
 **After startup, access:**
-- SSE Interface: `http://localhost:60002/sse`
-- streamableHTTP Interface: `http://localhost:60002/mcp`
-- Health Check: `http://localhost:60002/health`
+- Admin UI: `http://localhost:60002`
+- SSE: `http://localhost:60002/sse`
+- streamableHTTP: `http://localhost:60002/mcp`
+- API: `http://localhost:60002/api`
+- WebSocket: `ws://localhost:60002/ws`
+
+> After first launch, add/manage API keys in the Admin UI. `TAVILY_API_KEYS` is only used as an initial seed.
 
 <details>
 <summary>📦 More Deployment Options</summary>
@@ -91,7 +103,7 @@ cd tavily-mcp-loadbalancer
 
 # 2. Configure environment variables
 cp .env.example .env
-# Edit .env file
+# Edit .env: set DATABASE_ENCRYPTION_KEY (required)
 
 # 3. Start service
 docker-compose up -d
@@ -117,12 +129,11 @@ docker run -d \
 #### Development Mode
 
 ```bash
-# Development mode with hot reload
-npm run dev
-
-# Step-by-step execution
-npm run build
+# Development mode (HTTP + UI)
 npm run start-gateway
+
+# MCP stdio mode (tools only)
+npm run dev
 
 # Using script
 ./start.sh
@@ -346,16 +357,29 @@ Search result length: 2847 characters
 
 | Variable Name | Description | Default Value |
 |---------------|-------------|---------------|
-| `TAVILY_API_KEYS` | API key list (comma-separated) | Required |
-| `TAVILY_API_KEY` | Single API key | Optional |
-| `SUPERGATEWAY_PORT` | Service port | 60002 |
+| `PORT` | Service port | 60002 |
+| `HOST` | Bind host | 0.0.0.0 |
+| `DATABASE_PATH` | SQLite database path | ./data/tavily.db |
+| `DATABASE_ENCRYPTION_KEY` | DB encryption key (required) | - |
+| `ADMIN_PASSWORD` | Admin UI password (optional) | - |
+| `ENABLE_WEB_UI` | Enable Web UI | true |
+| `MAX_CONCURRENT_REQUESTS` | Max concurrency | 4 |
+| `REQUEST_TIMEOUT` | Request timeout (ms) | 30000 |
+| `MAX_KEY_ERRORS` | Max errors before disabling | 5 |
+| `LOG_RETENTION_DAYS` | Log retention days | 30 |
+| `LOG_LEVEL` | Log level | info |
+| `LOG_FORMAT` | Log format | json |
+| `TAVILY_API_KEYS` | Seed API keys (comma-separated) | Optional |
+| `TAVILY_API_KEY` | Single seed API key | Optional |
 
 ### Configuration Example
 
 ```bash
 # .env file
-TAVILY_API_KEYS=tvly-dev-key1,tvly-dev-key2,tvly-dev-key3
-SUPERGATEWAY_PORT=60002
+PORT=60002
+DATABASE_ENCRYPTION_KEY=your-32-byte-random-key
+ADMIN_PASSWORD=optional-password
+TAVILY_API_KEYS=tvly-dev-key1,tvly-dev-key2
 ```
 
 <details>
@@ -365,8 +389,9 @@ SUPERGATEWAY_PORT=60002
 
 ```bash
 # Docker runtime settings
-docker run -e "TAVILY_API_KEYS=key1,key2,key3" \
-           -e "SUPERGATEWAY_PORT=60002" \
+docker run -e "DATABASE_ENCRYPTION_KEY=your-key" \
+           -e "PORT=60002" \
+           -e "TAVILY_API_KEYS=key1,key2,key3" \
            yatotm1994/tavily-mcp-loadbalancer:latest
 ```
 
@@ -374,8 +399,9 @@ docker run -e "TAVILY_API_KEYS=key1,key2,key3" \
 
 ```bash
 # Development environment variables
+export DATABASE_ENCRYPTION_KEY="your-key"
 export TAVILY_API_KEYS="tvly-dev-key1,tvly-dev-key2"
-export SUPERGATEWAY_PORT=60002
+export PORT=60002
 
 # Or use .env file
 cp .env.example .env
