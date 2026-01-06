@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    # image: yatotm1994/tavily-mcp-loadbalancer:latest  # 调试完成后取消注释
+    image: yatotm1994/tavily-mcp-loadbalancer:latest
     ports:
       - "60002:60002"
     environment:
