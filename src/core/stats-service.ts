@@ -71,15 +71,10 @@ export class StatsService {
   }
 
   getTimeline(days: number = 30): Record<string, number> {
-    const logs = this.db.queryRequestLogs({
-      page: 1,
-      limit: 500,
-      startDate: daysAgoIso(days),
-    }).logs;
+    const rows = this.db.getDailyRequestCounts(daysAgoIso(days));
     const timeline: Record<string, number> = {};
-    logs.forEach((log) => {
-      const dateKey = log.created_at.slice(0, 10);
-      timeline[dateKey] = (timeline[dateKey] || 0) + 1;
+    rows.forEach((row) => {
+      timeline[row.date] = row.count;
     });
     return timeline;
   }

@@ -488,6 +488,21 @@ export class AppDatabase {
     return result.changes;
   }
 
+  /**
+   * Get daily request counts grouped by date for timeline chart.
+   */
+  getDailyRequestCounts(startDate: string): Array<{ date: string; count: number }> {
+    return this.db
+      .prepare(`
+        SELECT date(created_at) as date, COUNT(*) as count
+        FROM request_logs
+        WHERE created_at >= ?
+        GROUP BY date(created_at)
+        ORDER BY date ASC
+      `)
+      .all(startDate) as Array<{ date: string; count: number }>;
+  }
+
   setConfigValue(key: string, value: string, description?: string): void {
     const now = toIsoString();
     this.db
