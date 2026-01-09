@@ -14,6 +14,26 @@ const removeEmpty = (params: Record<string, unknown>): Record<string, unknown> =
   return cleaned;
 };
 
+/**
+ * Normalize time_range to valid Tavily API values by keyword detection.
+ */
+const normalizeTimeRange = (value: unknown): string | undefined => {
+  if (value === null || value === undefined || value === '') return undefined;
+
+  const str = String(value).toLowerCase();
+  const valid = ['day', 'week', 'month', 'year', 'd', 'w', 'm', 'y'];
+  if (valid.includes(str)) return str;
+
+  // Keyword detection: year > month > week > day
+  if (/year/i.test(str)) return 'year';
+  if (/month/i.test(str)) return 'month';
+  if (/week/i.test(str)) return 'week';
+  if (/day|hour/i.test(str)) return 'day';
+
+  logger.warn('Invalid time_range, ignoring', { value });
+  return undefined;
+};
+
 export class ToolRouter {
   constructor(private tavilyClient: TavilyClient) {}
 
@@ -32,7 +52,7 @@ export class ToolRouter {
           search_depth: args?.search_depth,
           topic: args?.topic,
           days: args?.days,
-          time_range: args?.time_range,
+          time_range: normalizeTimeRange(args?.time_range),
           max_results: args?.max_results,
           include_images: args?.include_images,
           include_image_descriptions: args?.include_image_descriptions,
