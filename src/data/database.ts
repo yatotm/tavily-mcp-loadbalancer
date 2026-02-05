@@ -272,7 +272,12 @@ export class AppDatabase {
   }
 
   deleteApiKey(id: number): void {
-    this.db.prepare('DELETE FROM api_keys WHERE id = ?').run(id);
+    const deleteTransaction = this.db.transaction((keyId: number) => {
+      this.db.prepare('DELETE FROM request_logs WHERE key_id = ?').run(keyId);
+      this.db.prepare('DELETE FROM monthly_quotas WHERE key_id = ?').run(keyId);
+      this.db.prepare('DELETE FROM api_keys WHERE id = ?').run(keyId);
+    });
+    deleteTransaction(id);
   }
 
   resetKeyErrors(id: number): void {

@@ -46,6 +46,14 @@ const isQuotaMessage = (message: string): boolean => {
   return text.includes('quota') || text.includes('exceed') || text.includes('credit') || text.includes('usage limit');
 };
 
+const isAccountDisabledMessage = (message: string): boolean => {
+  const text = message.toLowerCase();
+  return (text.includes('account') && text.includes('disabled')) ||
+         (text.includes('account') && text.includes('suspended')) ||
+         text.includes('unpaid') ||
+         text.includes('payment method');
+};
+
 const isRateLimitMessage = (message: string): boolean => {
   const text = message.toLowerCase();
   return text.includes('rate limit') || text.includes('too many requests');
@@ -118,6 +126,16 @@ export const classifyError = (
     }
 
     if (status && status >= 400) {
+      // 先检查是否是账户禁用消息
+      if (isAccountDisabledMessage(message)) {
+        return {
+          type: 'auth',
+          shouldRetry: false,
+          shouldDisableKey: true,
+          message: message || 'Account disabled',
+          incrementErrorCount: true,
+        };
+      }
       return {
         type: 'client',
         shouldRetry: false,
@@ -142,6 +160,16 @@ export const classifyError = (
   if (message && isQuotaMessage(message)) {
     return {
       type: 'quota_exceeded',
+      shouldRetry: false,
+      shouldDisableKey: true,
+      message,
+      incrementErrorCount: true,
+    };
+  }
+
+  if (message && isAccountDisabledMessage(message)) {
+    return {
+      type: 'auth',
       shouldRetry: false,
       shouldDisableKey: true,
       message,
@@ -183,6 +211,15 @@ export const classifyResponsePayload = (payload: unknown): ErrorClassification |
     };
   }
   if (message.toLowerCase().includes('invalid api key') || message.toLowerCase().includes('unauthorized')) {
+    return {
+      type: 'auth',
+      shouldRetry: false,
+      shouldDisableKey: true,
+      message,
+      incrementErrorCount: true,
+    };
+  }
+  if (isAccountDisabledMessage(message)) {
     return {
       type: 'auth',
       shouldRetry: false,
