@@ -20,24 +20,72 @@ const networkCodes = new Set([
   'ECONNREFUSED',
 ]);
 
+const safeStringify = (data: unknown): string => {
+  try {
+    return JSON.stringify(data);
+  } catch {
+    return String(data);
+  }
+};
+
+const formatValidationIssue = (value: unknown): string => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+  const issue = value as Record<string, unknown>;
+  const msg = typeof issue.msg === 'string' ? issue.msg : '';
+  const loc = Array.isArray(issue.loc)
+    ? issue.loc.filter((item): item is string | number => typeof item === 'string' || typeof item === 'number').join('.')
+    : '';
+
+  if (loc && msg) return `${loc}: ${msg}`;
+  return msg;
+};
+
+const collectMessages = (data: unknown): string[] => {
+  if (!data) return [];
+  if (typeof data === 'string') return [data];
+  if (typeof data === 'number' || typeof data === 'boolean') return [String(data)];
+
+  if (Array.isArray(data)) {
+    return data.flatMap((item) => collectMessages(item));
+  }
+
+  if (typeof data === 'object') {
+    const validationMessage = formatValidationIssue(data);
+    if (validationMessage) return [validationMessage];
+
+    const record = data as Record<string, unknown>;
+    const messages = [
+      ...collectMessages(record.message),
+      ...collectMessages(record.error),
+      ...collectMessages(record.detail),
+      ...collectMessages(record.msg),
+    ].filter(Boolean);
+
+    if (messages.length > 0) {
+      return messages;
+    }
+  }
+
+  return [];
+};
+
+const toMessage = (data: unknown): string => {
+  const messages = Array.from(new Set(collectMessages(data).filter(Boolean)));
+  if (messages.length > 0) return messages.join('; ');
+  return safeStringify(data);
+};
+
 const extractMessage = (data: unknown): string => {
   if (!data) return '';
   if (typeof data === 'string') return data;
-  if (typeof data === 'object') {
-    const message = (data as any).message || (data as any).error || (data as any).detail;
-    if (message) return String(message);
-    return JSON.stringify(data);
-  }
+  if (typeof data === 'object') return toMessage(data);
   return String(data);
 };
 
 const extractDetailMessage = (detail: unknown): string => {
   if (!detail) return '';
   if (typeof detail === 'string') return detail;
-  if (typeof detail === 'object') {
-    const message = (detail as any).error || (detail as any).message || (detail as any).detail;
-    return message ? String(message) : '';
-  }
+  if (typeof detail === 'object') return toMessage(detail);
   return String(detail);
 };
 
@@ -91,6 +139,15 @@ export const classifyError = (
     }
 
     if (status === 401 || status === 403 || status === 432 || status === 433) {
+      if ((status === 432 || status === 433) && isQuotaMessage(message)) {
+        return {
+          type: 'quota_exceeded',
+          shouldRetry: false,
+          shouldDisableKey: true,
+          message: message || 'API quota exceeded',
+          incrementErrorCount: true,
+        };
+      }
       return {
         type: 'auth',
         shouldRetry: false,
@@ -228,5 +285,11 @@ export const classifyResponsePayload = (payload: unknown): ErrorClassification |
       incrementErrorCount: true,
     };
   }
-  return null;
+  return {
+    type: 'client',
+    shouldRetry: false,
+    shouldDisableKey: false,
+    message,
+    incrementErrorCount: false,
+  };
 };

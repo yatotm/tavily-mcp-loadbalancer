@@ -82,6 +82,8 @@ export class ToolRouter {
 
         const cleaned = removeEmpty(payload);
         logger.info('Search request params', {
+          has_query: typeof cleaned.query === 'string' && cleaned.query.trim().length > 0,
+          topic: cleaned.topic,
           search_depth: args?.search_depth,
           cleaned_search_depth: cleaned.search_depth,
         });

@@ -17,13 +17,17 @@ export class QuotaRefresher {
     const currentPeriod = getCurrentQuotaPeriod();
     const keys = this.db.getApiKeys();
     keys.forEach((key) => {
-      const existing = this.db.getMonthlyQuotaForKey(key.id, currentPeriod);
-      if (!existing) {
-        this.db.ensureMonthlyQuota(key.id, currentPeriod);
-        if (key.status === 'quota_exceeded') {
-          this.keyPool.updateStatus(key.id, 'active');
-        }
-      }
+      const quota = this.db.ensureMonthlyQuota(key.id, currentPeriod);
+      if (key.status !== 'quota_exceeded') return;
+      const exhausted =
+        quota.quota_limit !== null && quota.used_count >= quota.quota_limit;
+      if (exhausted) return;
+      this.keyPool.updateStatus(key.id, 'active');
+      this.keyPool.resetErrors(key.id);
+      logger.info('Key reactivated by monthly quota refresh', {
+        keyId: key.id,
+        period: currentPeriod,
+      });
     });
     logger.info('Quota refresh check completed', { period: currentPeriod });
   }

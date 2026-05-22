@@ -8,6 +8,7 @@ import { defaultRetryConfig, computeDelay, sleep, RetryConfig } from './retry-ha
 import { getRuntimeConfig } from '../utils/runtime-config.js';
 import { EventBus } from '../core/event-bus.js';
 import { logger } from '../utils/logger.js';
+import { serializePayloadForLog } from './logging-utils.js';
 
 interface QueuedRequest<T> {
   execute: () => Promise<T>;
@@ -180,20 +181,11 @@ export class TavilyClient {
           const creditCount = this.calculateCredits(toolName, params);
           this.db.incrementMonthlyUsage(key.id, this.normalizeToolName(toolName), creditCount);
 
-          // 限制响应数据大小（最多50KB）
-          let responseDataStr: string | null = null;
-          try {
-            const fullResponse = JSON.stringify(response.data);
-            responseDataStr = fullResponse.length > 50000 ? fullResponse.slice(0, 50000) + '...(truncated)' : fullResponse;
-          } catch {
-            responseDataStr = null;
-          }
-
           this.logManager.enqueue({
             key_id: key.id,
             tool_name: toolName,
             request_params: JSON.stringify(params),
-            response_data: responseDataStr,
+            response_data: serializePayloadForLog(response.data),
             response_status: 'success',
             response_time_ms: Date.now() - requestStart,
             error_type: null,
@@ -217,7 +209,7 @@ export class TavilyClient {
             classification = classifyError(error, responseData, status, retryAfter);
           }
 
-          if (status === 401 || status === 403 || status === 432 || status === 433) {
+          if ((status === 401 || status === 403 || status === 432 || status === 433) && classification.type !== 'quota_exceeded') {
             classification = {
               ...classification,
               type: 'auth',
@@ -277,22 +269,11 @@ export class TavilyClient {
 
           this.keyPool.markFailure(key.id, classification.message, classification.incrementErrorCount);
 
-          // 记录错误响应数据
-          let errorResponseStr: string | null = null;
-          if (responseData) {
-            try {
-              const fullResponse = JSON.stringify(responseData);
-              errorResponseStr = fullResponse.length > 50000 ? fullResponse.slice(0, 50000) + '...(truncated)' : fullResponse;
-            } catch {
-              errorResponseStr = null;
-            }
-          }
-
           this.logManager.enqueue({
             key_id: key.id,
             tool_name: toolName,
             request_params: JSON.stringify(params),
-            response_data: errorResponseStr,
+            response_data: serializePayloadForLog(responseData),
             response_status: 'error',
             response_time_ms: Date.now() - requestStart,
             error_type: classification.type,
