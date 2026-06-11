@@ -325,14 +325,15 @@ export class AppDatabase {
     if (existing) {
       return existing as MonthlyQuotaRecord;
     }
+    const quotaLimit = this.getLatestKnownQuotaLimit(keyId, yearMonth);
     const now = toIsoString();
     const result = this.db
       .prepare(`
         INSERT INTO monthly_quotas (
           key_id, year_month, quota_limit, used_count, search_count, extract_count, crawl_count, map_count, reset_at, created_at, updated_at
-        ) VALUES (?, ?, NULL, 0, 0, 0, 0, 0, ?, ?, ?)
+        ) VALUES (?, ?, ?, 0, 0, 0, 0, 0, ?, ?, ?)
       `)
-      .run(keyId, yearMonth, now, now, now);
+      .run(keyId, yearMonth, quotaLimit, now, now, now);
     return this.db.prepare('SELECT * FROM monthly_quotas WHERE id = ?').get(result.lastInsertRowid) as MonthlyQuotaRecord;
   }
 
@@ -380,6 +381,29 @@ export class AppDatabase {
     return this.db
       .prepare('SELECT * FROM monthly_quotas WHERE year_month = ?')
       .all(yearMonth) as MonthlyQuotaRecord[];
+  }
+
+  getLatestKnownQuotaLimit(keyId: number, beforeYearMonth?: string): number | null {
+    const row = beforeYearMonth
+      ? this.db
+          .prepare(`
+            SELECT quota_limit
+            FROM monthly_quotas
+            WHERE key_id = ? AND year_month < ? AND quota_limit IS NOT NULL
+            ORDER BY year_month DESC
+            LIMIT 1
+          `)
+          .get(keyId, beforeYearMonth)
+      : this.db
+          .prepare(`
+            SELECT quota_limit
+            FROM monthly_quotas
+            WHERE key_id = ? AND quota_limit IS NOT NULL
+            ORDER BY year_month DESC
+            LIMIT 1
+          `)
+          .get(keyId);
+    return (row as { quota_limit: number } | undefined)?.quota_limit ?? null;
   }
 
   getMonthlyQuotaForKey(keyId: number, yearMonth: string): MonthlyQuotaRecord | null {

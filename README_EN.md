@@ -241,6 +241,9 @@ curl -X POST http://localhost:60002/mcp \
 | `MAX_CONCURRENT_REQUESTS` | Max concurrency | 4 |
 | `REQUEST_TIMEOUT` | Request timeout (ms) | 30000 |
 | `MAX_KEY_ERRORS` | Max errors before disabling | 5 |
+| `USAGE_SYNC_DELAY_MS` | Delay between keys during quota sync (ms) | 1200 |
+| `USAGE_SYNC_RETRY_DELAY_MS` | Retry delay after quota sync rate limiting (ms) | 10000 |
+| `USAGE_SYNC_MAX_RETRIES` | Max retries after quota sync rate limiting | 1 |
 | `LOG_RETENTION_DAYS` | Log retention days | 30 |
 | `LOG_LEVEL` | Log level | info |
 | `TAVILY_API_KEYS` | Seed keys (comma-separated) | - |

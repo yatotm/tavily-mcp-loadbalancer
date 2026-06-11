@@ -8,7 +8,10 @@ import { ConnectionStore } from '../core/connection-store.js';
 import { StatsService } from '../core/stats-service.js';
 import { maskKey } from '../utils/crypto.js';
 import { getCurrentQuotaPeriod, daysAgoIso } from '../utils/date.js';
+import { config } from '../utils/config.js';
 import { getRuntimeConfig, updateRuntimeConfig } from '../utils/runtime-config.js';
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 export class ApiRouter {
   public router = express.Router();
@@ -174,7 +177,11 @@ export class ApiRouter {
       const uniqueIds = Array.from(new Set(ids.map((id: any) => Number(id)).filter((id: number) => Number.isFinite(id))));
       const results: Array<{ id: number; status: 'success' | 'error'; error_type?: string | null; error_message?: string | null }> = [];
 
-      for (const id of uniqueIds) {
+      for (let index = 0; index < uniqueIds.length; index += 1) {
+        if (index > 0 && config.usageSyncDelayMs > 0) {
+          await sleep(config.usageSyncDelayMs);
+        }
+        const id = uniqueIds[index];
         let key;
         try {
           key = this.db.getApiKeyById(id);
@@ -396,7 +403,11 @@ export class ApiRouter {
     this.router.post('/settings/sync', async (req, res) => {
       const keys = this.db.getApiKeys();
       const results: Array<{ id: number; status: 'success' | 'error'; error_type?: string | null; error_message?: string | null }> = [];
-      for (const key of keys) {
+      for (let index = 0; index < keys.length; index += 1) {
+        if (index > 0 && config.usageSyncDelayMs > 0) {
+          await sleep(config.usageSyncDelayMs);
+        }
+        const key = keys[index];
         const startedAt = Date.now();
         try {
           const usage = await this.usageClient.fetchUsageAndSync(key.id, key.key_value);

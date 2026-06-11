@@ -241,6 +241,9 @@ curl -X POST http://localhost:60002/mcp \
 | `MAX_CONCURRENT_REQUESTS` | 最大并发 | 4 |
 | `REQUEST_TIMEOUT` | 请求超时（ms） | 30000 |
 | `MAX_KEY_ERRORS` | Key 最大错误次数 | 5 |
+| `USAGE_SYNC_DELAY_MS` | 批量同步额度时每个 Key 之间的间隔（ms） | 1200 |
+| `USAGE_SYNC_RETRY_DELAY_MS` | 额度同步被限流后的重试等待时间（ms） | 10000 |
+| `USAGE_SYNC_MAX_RETRIES` | 额度同步被限流后的最大重试次数 | 1 |
 | `LOG_RETENTION_DAYS` | 日志保留天数 | 30 |
 | `LOG_LEVEL` | 日志级别 | info |
 | `TAVILY_API_KEYS` | 初始 Key（逗号分隔） | - |
