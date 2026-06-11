@@ -6,6 +6,8 @@ FROM node:20-alpine AS builder
 # 设置工作目录
 WORKDIR /app
 
+ARG NPM_CONFIG_REGISTRY=https://registry.npmjs.org/
+
 # 复制package文件
 COPY package*.json ./
 
@@ -14,7 +16,7 @@ RUN apk add --no-cache --virtual .build-deps python3 make g++
 
 # 安装所有依赖（包括开发依赖用于构建）
 RUN --mount=type=cache,target=/root/.npm \
-    npm ci --no-audit --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000
+    npm ci --no-audit --registry=$NPM_CONFIG_REGISTRY --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000
 
 # 复制源代码
 COPY . .
@@ -25,7 +27,7 @@ RUN npm run build
 # 构建前端 Vue 项目
 WORKDIR /app/web
 RUN --mount=type=cache,target=/root/.npm \
-    npm ci --no-audit --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000 && npm run build
+    npm ci --no-audit --registry=$NPM_CONFIG_REGISTRY --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000 && npm run build
 
 # 回到主目录并裁剪为生产依赖
 WORKDIR /app
