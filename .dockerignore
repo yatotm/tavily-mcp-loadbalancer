@@ -53,6 +53,14 @@ temp/
 logs/
 *.log
 
+# 运行时数据
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
 # Docker相关
 Dockerfile*
 docker-compose*
