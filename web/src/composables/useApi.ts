@@ -38,8 +38,12 @@ export const useApi = () => {
         ? JSON.stringify(options.body)
         : options.body
 
+    const sentToken = Boolean(headers["X-Admin-Token"])
+
+    // 禁用浏览器对 API 的缓存（避免 ETag 304 干扰鉴权/数据刷新）
     const response = await fetch(url, {
       ...options,
+      cache: 'no-store',
       headers,
       body,
     })
@@ -49,7 +53,11 @@ export const useApi = () => {
     if (!response.ok) {
       if (response.status === 401) {
         authStore.setAuthRequired(true)
-        authStore.logout()
+        // 仅当本次请求确实带了 token 却被拒时才清 token。
+        // 避免未登录轮询的 401 清掉登录过程中刚写入的密码（竞态）。
+        if (sentToken) {
+          authStore.logout()
+        }
       }
       const message =
         (data && typeof data === 'object' && 'error' in data && (data as any).error) ||

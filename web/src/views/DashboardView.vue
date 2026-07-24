@@ -6,9 +6,11 @@ import ToolUsageChart from '../components/ToolUsageChart.vue'
 import TimelineChart from '../components/TimelineChart.vue'
 import { useApi } from '../composables/useApi'
 import { useToast } from '../composables/useToast'
+import { useAuthStore } from '../stores/auth'
 
 const statsStore = useStatsStore()
 const api = useApi()
+const authStore = useAuthStore()
 const { error } = useToast()
 const loading = ref(false)
 
@@ -22,6 +24,7 @@ const formatUptime = (seconds: number) => {
 }
 
 const fetchData = async () => {
+  if (authStore.requiresAuth && !authStore.token) return
   loading.value = true
   try {
     const data = await api.get<StatsOverview>('/api/stats/overview')

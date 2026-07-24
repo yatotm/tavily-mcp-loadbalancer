@@ -14,7 +14,6 @@
           type="password"
           show-password
           placeholder="请输入管理员密码"
-          @keyup.enter="handleLogin"
         />
       </el-form-item>
     </el-form>
@@ -62,6 +61,9 @@ watch(
 const loading = ref(false)
 
 const handleLogin = async () => {
+  // 防止按钮点击与表单提交双触发导致重复验密
+  if (loading.value) return
+
   if (!password.value.trim()) {
     error.value = '请输入密码'
     return
@@ -71,8 +73,9 @@ const handleLogin = async () => {
   error.value = ''
 
   try {
-    // Test the password by making an authenticated request
+    // 用受保护接口验密；禁用缓存，避免 Express ETag 导致 304 误判
     const res = await fetch('/api/keys', {
+      cache: 'no-store',
       headers: { 'X-Admin-Token': password.value.trim() }
     })
 

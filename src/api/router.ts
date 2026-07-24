@@ -23,6 +23,12 @@ export class ApiRouter {
   }
 
   private setupRoutes(): void {
+    // 所有 /api 响应禁止缓存，避免浏览器 ETag/304 干扰鉴权与数据一致性
+    this.router.use((_req, res, next) => {
+      res.setHeader('Cache-Control', 'no-store');
+      next();
+    });
+
     this.router.get('/health', (req, res) => {
       const runtime = getRuntimeConfig();
       res.json({

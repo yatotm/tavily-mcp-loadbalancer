@@ -27,7 +27,7 @@ export const searchToolDescription =
   "A powerful web search tool that provides comprehensive, real-time results using Tavily's AI search engine. Returns relevant web content with customizable parameters for result count, content type, and domain filtering. Ideal for gathering current information, news, and detailed web content analysis.";
 
 export const searchToolSchema = {
-  type: 'object',
+  type: 'object' as const,
   properties: {
     query: {
       type: 'string',
@@ -117,10 +117,10 @@ export const searchToolSchema = {
     },
   },
   required: ['query'],
-} as const;
+};
 
 export const extractToolSchema = {
-  type: 'object',
+  type: 'object' as const,
   properties: {
     urls: {
       type: 'array',
@@ -156,10 +156,10 @@ export const extractToolSchema = {
     },
   },
   required: ['urls'],
-} as const;
+};
 
 export const crawlToolSchema = {
-  type: 'object',
+  type: 'object' as const,
   properties: {
     url: {
       type: 'string',
@@ -224,10 +224,10 @@ export const crawlToolSchema = {
     },
   },
   required: ['url'],
-} as const;
+};
 
 export const mapToolSchema = {
-  type: 'object',
+  type: 'object' as const,
   properties: {
     url: {
       type: 'string',
@@ -274,7 +274,7 @@ export const mapToolSchema = {
     },
   },
   required: ['url'],
-} as const;
+};
 
 export const toolDefinitions: Tool[] = [
   {
