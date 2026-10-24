@@ -207,7 +207,7 @@ export class HttpServer {
             capabilities: { tools: {} },
             serverInfo: {
               name: 'tavily-mcp-loadbalancer',
-              version: '3.1.0',
+              version: '3.1.1',
               capabilities: { tools: {} },
             },
           },

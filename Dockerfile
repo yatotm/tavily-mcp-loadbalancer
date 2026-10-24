@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # 使用官方Node.js LTS版本作为基础镜像
-FROM node:20-alpine AS builder
+FROM node:22.23.4-alpine AS builder
 
 # 设置工作目录
 WORKDIR /app
@@ -34,7 +34,7 @@ WORKDIR /app
 RUN npm prune --omit=dev && npm cache clean --force && apk del .build-deps
 
 # 运行时镜像
-FROM node:20-alpine AS runtime
+FROM node:22.23.4-alpine AS runtime
 
 # 设置工作目录
 WORKDIR /app

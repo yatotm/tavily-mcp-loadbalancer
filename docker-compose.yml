@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: yatotm1994/tavily-mcp-loadbalancer:latest
+    image: tavily-mcp-loadbalancer:3.1.1
     ports:
       - "60002:60002"
     environment:
