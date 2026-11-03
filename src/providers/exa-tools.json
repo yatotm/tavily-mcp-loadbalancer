@@ -1,0 +1,754 @@
+[
+  {
+    "name": "web_search_exa",
+    "title": "Web Search",
+    "description": "Search the web for any topic and get clean, ready-to-use content.\n\n      Best for: Finding current information, news, facts, people, companies, or answering questions about any topic.\n      Returns: Clean text content from top search results.\n\n      Query tips:\n      describe the ideal page, not keywords. \"blog post comparing React and Vue performance\" not \"React vs Vue\".\n      Use category:people / category:company to search through Linkedin profiles / companies respectively.\n      If highlights are insufficient, follow up with web_fetch_exa on the best URLs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Natural language search query. Should be a semantically rich description of the ideal page, not just keywords. Optionally include category:<type> (company, people) to focus results — e.g. 'category:people John Doe software engineer'."
+        },
+        "numResults": {
+          "type": "number",
+          "description": "Number of search results to return (default: 10)."
+        },
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Goal for this search turn; say which documents should rank first, which should be excluded, and what specific facts or figures to pull from them."
+        }
+      },
+      "required": [
+        "query",
+        "objective"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "web_search_advanced_exa",
+    "description": "Advanced web search with full control over filters, domains, dates, and content options.\n\nBest for: When you need specific filters like date ranges, domain restrictions, or category filters.\nNot recommended for: Simple searches - use web_search_exa instead.\nReturns: Search results with page text, highlights, summaries or subpage content. Page text is the full page by default. When highlights or summaries are enabled, page text is omitted unless textMaxCharacters is set.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Search query - can be a question, statement, or keywords"
+        },
+        "numResults": {
+          "type": "number",
+          "description": "Number of results (1-100, default: 10)"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "lite",
+            "fast",
+            "instant"
+          ],
+          "description": "Search type. 'auto' is the default and recommended type. It returns high-quality results and supports every parameter. 'lite' is the low-cost, low-latency type and serves cached content. It supports only query, numResults, category, includeDomains, excludeDomains, startPublishedDate, endPublishedDate, userLocation, moderation, textMaxCharacters and the highlights parameters. 'instant' and 'fast' are legacy types. Use 'lite' instead of 'instant'. Use 'lite' instead of 'fast', or 'auto' when the search needs a parameter 'lite' does not support."
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "company",
+            "publication",
+            "news",
+            "pdf",
+            "github",
+            "personal site",
+            "people",
+            "financial report"
+          ],
+          "description": "Filter results to a specific category"
+        },
+        "includeDomains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Only include results from these domains (e.g., ['arxiv.org', 'github.com'])"
+        },
+        "excludeDomains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Exclude results from these domains"
+        },
+        "startPublishedDate": {
+          "type": "string",
+          "description": "Only include results published after this date (ISO 8601: YYYY-MM-DD)"
+        },
+        "endPublishedDate": {
+          "type": "string",
+          "description": "Only include results published before this date (ISO 8601: YYYY-MM-DD)"
+        },
+        "startCrawlDate": {
+          "type": "string",
+          "description": "Only include results crawled after this date (ISO 8601: YYYY-MM-DD)"
+        },
+        "endCrawlDate": {
+          "type": "string",
+          "description": "Only include results crawled before this date (ISO 8601: YYYY-MM-DD)"
+        },
+        "includeText": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Only include results containing ALL of these text strings"
+        },
+        "excludeText": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Exclude results containing ANY of these text strings"
+        },
+        "userLocation": {
+          "type": "string",
+          "description": "ISO country code for geo-targeted results (e.g., 'US', 'GB', 'DE')"
+        },
+        "moderation": {
+          "type": "boolean",
+          "description": "Filter out unsafe/inappropriate content"
+        },
+        "additionalQueries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional query variations to expand search coverage"
+        },
+        "textMaxCharacters": {
+          "type": "number",
+          "minimum": 1,
+          "description": "Max characters of page text per result. Set it to get page text alongside highlights or summaries."
+        },
+        "contextMaxCharacters": {
+          "type": "number",
+          "minimum": 1,
+          "description": "Max characters for context string (not included by default)"
+        },
+        "enableSummary": {
+          "type": "boolean",
+          "description": "Enable summary generation for results"
+        },
+        "summaryQuery": {
+          "type": "string",
+          "description": "Focus query for summary generation"
+        },
+        "enableHighlights": {
+          "type": "boolean",
+          "description": "Enable highlights extraction"
+        },
+        "highlightsMaxCharacters": {
+          "type": "number",
+          "description": "Maximum total characters across all highlights per URL. Preferred over highlightsNumSentences."
+        },
+        "highlightsNumSentences": {
+          "type": "number",
+          "description": "Deprecated. Use highlightsMaxCharacters instead."
+        },
+        "highlightsPerUrl": {
+          "type": "number",
+          "description": "Deprecated and ignored. Use highlightsMaxCharacters instead."
+        },
+        "highlightsQuery": {
+          "type": "string",
+          "description": "Query for highlight relevance"
+        },
+        "maxAgeHours": {
+          "type": "number",
+          "description": "Maximum age of cached content in hours. 0 = always fetch fresh content, omit = use cached content with fresh fetch fallback"
+        },
+        "livecrawlTimeout": {
+          "type": "number",
+          "description": "Timeout in milliseconds for fetching fresh content when maxAgeHours triggers a live fetch"
+        },
+        "subpages": {
+          "type": "number",
+          "description": "Number of subpages to crawl from each result (1-10)"
+        },
+        "subpageTarget": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Keywords to target when selecting subpages"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "company_research_exa",
+    "description": "[Deprecated: Use web_search_advanced_exa instead] Research any company to get business information, news, and insights.\n\nBest for: Learning about a company's products, services, recent news, or industry position.\nReturns: Company information from trusted business sources.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "companyName": {
+          "type": "string",
+          "description": "Name of the company to research"
+        },
+        "numResults": {
+          "type": "number",
+          "description": "Number of search results to return (default: 3)"
+        }
+      },
+      "required": [
+        "companyName"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "web_fetch_exa",
+    "title": "Fetch Web Pages",
+    "description": "Read a webpage's full content as clean markdown. Use after web_search_exa when highlights are insufficient or to read any URL.\n\nBest for: Extracting full content from known URLs. Batch multiple URLs in one call.\nReturns: Clean text content and metadata from the page(s).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "urls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "URLs to read. Batch multiple URLs in one call."
+        },
+        "maxCharacters": {
+          "type": "number",
+          "minimum": 1,
+          "description": "Maximum characters to extract per page (default: 3000)"
+        }
+      },
+      "required": [
+        "urls"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "crawling_exa",
+    "description": "Read a webpage's full content as clean markdown. Use after web_search_exa when highlights are insufficient or to read any URL.\n\nBest for: Extracting full content from known URLs. Batch multiple URLs in one call.\nReturns: Clean text content and metadata from the page(s).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "urls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "URLs to read. Batch multiple URLs in one call."
+        },
+        "maxCharacters": {
+          "type": "number",
+          "minimum": 1,
+          "description": "Maximum characters to extract per page (default: 3000)"
+        }
+      },
+      "required": [
+        "urls"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "people_search_exa",
+    "description": "[Deprecated: Use web_search_advanced_exa instead] Find people and their professional profiles.\n\nBest for: Finding professionals, executives, or anyone with a public profile.\nReturns: Profile information and links.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Search query for finding people"
+        },
+        "numResults": {
+          "type": "number",
+          "description": "Number of profile results to return (default: 5)"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "linkedin_search_exa",
+    "description": "[Deprecated: Use web_search_advanced_exa with category 'people' instead] Search LinkedIn profiles.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Search query for finding people on LinkedIn"
+        },
+        "numResults": {
+          "type": "number",
+          "description": "Number of LinkedIn profile results to return (default: 5)"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "deep_researcher_start",
+    "description": "[Deprecated] Start an AI research agent that searches, reads, and writes a detailed report. Takes 15 seconds to 2 minutes.\n\nBest for: Complex research questions needing deep analysis and synthesis.\nReturns: Research ID - use deep_researcher_check to get results.\nImportant: Call deep_researcher_check with the returned research ID to get the report.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "instructions": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Complex research question or detailed instructions for the AI researcher. Be specific about what you want to research and any particular aspects you want covered."
+        },
+        "model": {
+          "type": "string",
+          "enum": [
+            "exa-research-fast",
+            "exa-research",
+            "exa-research-pro"
+          ],
+          "description": "Research model: 'exa-research-fast' (fastest, ~15s, good for simple queries), 'exa-research' (balanced, 15-45s, good for most queries), or 'exa-research-pro' (most comprehensive, 45s-3min, for complex topics). Default: exa-research-fast"
+        },
+        "outputSchema": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "Optional JSON Schema for structured output. When provided, the research report will include a 'parsed' field with data matching this schema."
+        }
+      },
+      "required": [
+        "instructions"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "deep_researcher_check",
+    "description": "[Deprecated] Check status and get results from a deep research task.\n\nBest for: Getting the research report after calling deep_researcher_start.\nReturns: Research report when complete, or status update if still running.\nImportant: Keep calling with the same research ID until status is 'completed'.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "researchId": {
+          "type": "string",
+          "description": "The research ID returned from deep_researcher_start tool"
+        }
+      },
+      "required": [
+        "researchId"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "get_code_context_exa",
+    "description": "[Deprecated: Use web_search_exa instead] Find code examples, documentation, and programming solutions. \n\nBest for: Any programming question - API usage, library examples, code snippets, debugging help.\nReturns: Relevant code and documentation.\n\nQuery tips: describe what you're looking for specifically. \"Python requests library POST with JSON body\" not \"python http\".\nIf highlights are insufficient, follow up with web_fetch_exa on the best URLs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Search query to find relevant context for APIs, Libraries, and SDKs. For example, 'React useState hook examples', 'Python pandas dataframe filtering', 'Express.js middleware', 'Next js partial prerendering configuration'"
+        },
+        "numResults": {
+          "type": "number",
+          "description": "Number of search results to return (default: 8)"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "deep_search_exa",
+    "description": "[Deprecated: Use web_search_advanced_exa instead] Deep search with automatic query expansion for thorough research. Generates multiple search variations to find results from multiple angles, then synthesizes a short answer with citations.\n\nBest for: Complex questions needing information from multiple angles.\nReturns: A synthesized answer with citations, plus individual search results with highlights. When structuredOutput is enabled, returns structured JSON instead of markdown.\nNote: Requires an Exa API key. 'deep' takes 4-12s.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Natural language description of what the web search is looking for. Try to make the search query atomic - looking for a specific piece of information."
+        },
+        "search_queries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional list of keyword search queries related to the objective. Limited to 5 entries of up to 5 words each (~200 characters)."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "deep",
+            "deep-reasoning"
+          ],
+          "description": "Search type. 'deep' is the default and recommended type and takes 4-12s. 'deep-reasoning' is a legacy type. Use 'deep' instead, or run an Exa Agent with the agent_run tool for long-running research, list building and multi-hop enrichment."
+        },
+        "numResults": {
+          "type": "number",
+          "description": "Number of search results to return (default: 8)"
+        },
+        "highlightMaxCharacters": {
+          "type": "number",
+          "minimum": 1,
+          "description": "Maximum characters for highlights per result (default: 4000)"
+        },
+        "outputSchema": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "JSON schema for structured output. Must include a 'type' field set to 'object' or 'text'. For 'object' type, optionally include 'properties' and 'required'. Max 10 total properties, max nesting depth 2. When provided, automatically enables structured output mode."
+        },
+        "systemPrompt": {
+          "type": "string",
+          "maxLength": 32000,
+          "description": "Instructions for how the deep search agent should process and format results."
+        },
+        "structuredOutput": {
+          "type": "boolean",
+          "description": "When true, returns a structured JSON response instead of markdown. The API will determine the appropriate structure based on the query. Prefer using outputSchema for more control over the response shape."
+        }
+      },
+      "required": [
+        "objective"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": false
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  },
+  {
+    "name": "agent_run",
+    "title": "Run Exa Agent",
+    "description": "Start or resume an Exa Agent run for multi-step research, list-building, or enrichment. Use it instead of running many searches yourself when a task needs multiple searches, cross-source verification, or a structured table of results. Long-running: returns a run ID; resume with runId when the tool reports the run is still running. Not for a single question or lookup (use web_search_exa or web_search_advanced_exa) or reading a known URL (use web_fetch_exa). An interrupted tool call is not an explicit cancellation request.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Natural-language research or enrichment objective. Provide query or runId, not both."
+        },
+        "runId": {
+          "type": "string",
+          "pattern": "^agent_run_",
+          "description": "ID returned by an earlier call. Use it to check or continue waiting for the same run. Do not start a duplicate run."
+        },
+        "systemPrompt": {
+          "type": "string",
+          "description": "System-level guidance for the Agent."
+        },
+        "outputSchema": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "JSON Schema describing the desired research output. Prefer a top-level object with bounded arrays and source/evidence fields."
+        },
+        "input": {
+          "type": "object",
+          "properties": {
+            "data": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "description": "Known rows/entities to enrich or process."
+            },
+            "exclusion": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "description": "Entities, rows, or records Agent should avoid returning again."
+            }
+          },
+          "additionalProperties": false
+        },
+        "dataSources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Exa Connect provider ID. Self-serve providers: fiber, financial_datasets, similarweb, baselayer, affiliate, particle, jinko, polymarket, macrobond. Other providers work only when enabled for your Exa team."
+              }
+            },
+            "required": [
+              "provider"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 5,
+          "description": "Exa Connect providers to enable for this run."
+        },
+        "previousRunId": {
+          "type": "string",
+          "pattern": "^agent_run_",
+          "description": "ID of a completed prior run to use as context for a new run."
+        },
+        "effort": {
+          "type": "string",
+          "enum": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "ultra",
+            "auto"
+          ],
+          "description": "Agent effort level. Defaults to low."
+        },
+        "budget": {
+          "type": "object",
+          "properties": {
+            "maxCostDollars": {
+              "type": "number",
+              "description": "Maximum spend for the run in US dollars, $1–$100. Only for effort auto or ultra; defaults to $5 for auto and $20 for ultra."
+            },
+            "maxDurationSeconds": {
+              "type": "integer",
+              "description": "Soft wall-clock limit in seconds, 300–10800. Only for effort ultra; the run returns what it has found as it nears the limit."
+            }
+          },
+          "additionalProperties": false,
+          "description": "Per-run spend and duration limits for the metered auto and ultra efforts. Set it when the user names a cost or time limit."
+        }
+      },
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean",
+          "description": "True for completed and running runs; false for failed and cancelled."
+        },
+        "id": {
+          "type": "string",
+          "description": "agent_run_... ID. Pass as runId to resume a running run."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "running",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "outputReady": {
+          "type": "boolean",
+          "description": "True only when status is completed."
+        },
+        "output": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Prose answer."
+                },
+                "structured": {
+                  "description": "Output matching the caller-supplied outputSchema, if any."
+                },
+                "grounding": {
+                  "description": "Per-field citations and confidence."
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  }
+                }
+              },
+              "additionalProperties": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stopReason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the run stopped, e.g. complete, cancelled, error."
+        },
+        "usage": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "costDollars": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "error": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "message": {
+          "type": "string",
+          "description": "Next-step guidance for running runs."
+        }
+      },
+      "required": [
+        "success",
+        "id",
+        "status",
+        "outputReady"
+      ],
+      "additionalProperties": false,
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "execution": {
+      "taskSupport": "forbidden"
+    }
+  }
+]

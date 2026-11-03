@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import TablePagination from './TablePagination.vue'
 export interface LogEntry {
   id: number
   timestamp: string
@@ -7,6 +8,8 @@ export interface LogEntry {
   status: string
   duration_ms: number | null
   error_message?: string
+  cost_usd?: number | null
+  cost_source?: string | null
 }
 
 const props = defineProps<{
@@ -52,7 +55,7 @@ const handleRowClick = (row: LogEntry) => {
         </template>
       </el-table-column>
 
-      <el-table-column prop="tool" label="工具" width="130">
+      <el-table-column prop="tool" label="工具" min-width="210" show-overflow-tooltip>
         <template #default="{ row }">
           <el-tag size="small">{{ row.tool }}</el-tag>
         </template>
@@ -67,7 +70,7 @@ const handleRowClick = (row: LogEntry) => {
       <el-table-column label="状态" width="100">
         <template #default="{ row }">
           <el-tag :type="statusType(row.status)" size="small">
-            {{ row.status }}
+            {{ row.status==='success'?'成功':'失败' }}
           </el-tag>
         </template>
       </el-table-column>
@@ -79,6 +82,7 @@ const handleRowClick = (row: LogEntry) => {
         </template>
       </el-table-column>
 
+      <el-table-column label="费用 / USD" width="135"><template #default="{row}"><span v-if="row.cost_usd!=null">${{row.cost_usd.toFixed(4)}}{{row.cost_source==='estimated'?'（估算）':''}}</span><span v-else>{{row.cost_source?'待确认':'—'}}</span></template></el-table-column>
       <el-table-column label="错误信息" min-width="200">
         <template #default="{ row }">
           <span v-if="row.error_message" class="error-msg" :title="row.error_message">
@@ -89,17 +93,7 @@ const handleRowClick = (row: LogEntry) => {
       </el-table-column>
     </el-table>
 
-    <div class="pagination-wrapper">
-      <el-pagination
-        v-model:current-page="props.page"
-        v-model:page-size="props.pageSize"
-        :page-sizes="[10, 20, 50, 100]"
-        layout="total, sizes, prev, pager, next"
-        :total="total"
-        @size-change="emit('update:pageSize', $event)"
-        @current-change="emit('update:page', $event)"
-      />
-    </div>
+    <TablePagination :page="props.page" :page-size="props.pageSize" :total="props.total" @update:page="emit('update:page',$event)" @update:page-size="emit('update:pageSize',$event)"/>
   </div>
 </template>
 

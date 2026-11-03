@@ -6,7 +6,90 @@
 
 **Language / 语言**: [English](./README_EN.md) | [中文](./README.md)
 
-一个支持多 API 密钥负载均衡的 Tavily MCP 服务器，提供 SSE 和 streamableHTTP 接口，自动轮询多个 API 密钥以实现高可用性。
+一个支持 Tavily 与 Exa 多 API 密钥负载均衡的 MCP 网关，提供 SSE 和 streamableHTTP 接口，自动轮询多个 API 密钥以实现高可用性。
+
+## v4.1.2：逐个测试密钥
+
+密钥池每行操作列增加「测试」。Tavily 使用已有低频队列校验该 Key 并同步配额，页面显示等待及完成结果；Exa 使用所选 Key 发起一次 Lite 搜索（1 个结果，按当前官方价格约 $0.004），测试费用进入账本。测试不切换到其他 Key，不自动重试 Exa 请求；重复点击合并，错误原因及测试记录可查看。测试通过不会自动启用失效或手动停用的密钥。
+
+## v4.1.1：密钥批量删除
+
+在密钥池勾选当前页的密钥，点击「批量删除」，确认渠道和数量后删除。Tavily、Exa 均支持；翻页或切换渠道会清除选择。整批删除在同一事务中完成，删除后自动刷新，末页清空时返回上一页。历史请求日志及 Exa 费用账本保留，关联的待同步任务一并取消。
+
+## v4.1：额度看板、分页与 Exa 计费（2026-11-03）
+
+- 恢复总览与统计页的 Tavily 当月已用量、总额度、剩余额度、可用额度及进度；可用额度只统计启用中的密钥，未知上限单独提示。Exa 美元费用独立展示。
+- 删除装饰性小标题，统一中文分页。密钥按渠道、状态和关键词在服务端筛选后分页；日志与统计列表可切换页码和每页条数，翻页清除当前选择。
+- 数据库新增独立费用账本，日志清理或删除密钥不清空历史费用。升级前产生的 Exa 请求不倒推计价。
+
+### Exa 费用与恢复规则
+
+按 [Exa 官方价格](https://exa.ai/docs/admin/pricing) 和官方 MCP 实际请求构造计算：搜索按类型、结果数量及摘要选项估算，抓取按请求 URL 数量估算。响应包含 `costDollars` 时优先记录该值；未包含时明确标为估算，实际返回数量、企业折扣等可能造成差异。研究任务按任务 ID 记账，轮询只更新原费用；动态计费缺少权威金额时显示“待确认”，不把费用上限当实际消费。费用在结果审查前记账。
+
+在 Exa 密钥的「费用」中可选配同团队的 **Service Key + publicId**，接入官方 [Key 用量接口](https://exa.ai/docs/reference/team-management/get-api-key-usage) 与 [Key 预算状态](https://exa.ai/docs/reference/team-management/get-api-key)。需要开通 Team Management，普通搜索 Key 不能使用。配置后每 6 小时同步，也可手动同步。月用量包含该 Key 的其他客户端调用，与本地账本分开展示，不重复相加；月用量查询区间不等于团队预算账期。Service Key 加密落库，接口中的历史明文凭据字段不会保存或返回。
+
+依据 [Exa 错误定义](https://exa.ai/docs/admin/error-codes)，HTTP 错误和 MCP/HTTP 200 错误内容都会分类：无余额、Key/团队预算超限暂停；无效 Key 或被封团队停止自动轮询；限流按 Retry-After 冷却；功能权限和内容策略错误不会封禁 Key；URL 抓取失败不会当成整个账号故障。未知错误保守处理。可能已创建的研究任务不会因超时重放；仅明确未处理的 SERVICE_OVERLOADED 可以安全重试。
+
+Exa 恢复规则可选自动、每月指定日期（UTC）、手动。自动模式只对 `NO_MORE_CREDITS` 在下月初恢复一次轮询资格，适用于领取月度免费额度的首个团队；不是每个 Key 都有独立免费余额，非此类账户可选手动。Key/团队预算超限默认不猜测账期；可配置日期，或通过官方接口确认 Key 预算恢复。账户余额按 [官方团队账单规则](https://exa.ai/docs/admin/billing-and-rate-limits) 共享，本地不伪造余额。失效与手动停用状态不会被月度任务恢复。
+
+Tavily 按 [官方月重置规则](https://help.tavily.com/articles/6846808029-understanding-api-credits-reset) 恢复额度暂停 Key，`432/433` 按额度耗尽处理，`401` 按失效处理；用量同步确认已用尽时也暂停。额度恢复只改变额度暂停状态，不启用失效或手动停用的密钥。
+
+## v4.0：多渠道搜索网关
+
+当前源码已扩展为 Tavily + Exa 网关。原有数据库会自动增加渠道字段，旧 Key 和历史日志均归属 Tavily；原地址继续有效。请使用 `docker compose up -d --build` 构建此版本，远程 `latest` 镜像不代表本地修改已经发布。
+
+| 渠道 | SSE | Streamable HTTP |
+| --- | --- | --- |
+| Tavily（兼容原地址） | `/sse` | `/mcp` |
+| Tavily | `/tavily/sse` | `/tavily/mcp` |
+| Exa | `/exa/sse` | `/exa/mcp` |
+
+SSE 的消息地址由服务自动返回，分别为 `/message`、`/tavily/message`、`/exa/message`。HTTP 为无状态 MCP；GET/DELETE 返回 405。stdio 使用 `MCP_PROVIDER=exa npm start` 选择 Exa，默认 Tavily。
+
+### 官方更新核对
+
+核对来源：[Tavily 官方源码](https://github.com/tavily-ai/tavily-mcp)、[Tavily MCP 文档](https://docs.tavily.com/documentation/mcp)、[Exa 官方源码](https://github.com/exa-labs/exa-mcp-server)、[Exa MCP 文档](https://exa.ai/docs/get-started/exa-mcp)。工具定义快照保存在 `src/providers/*-tools.json`。
+
+- Tavily：现有四个工具以外，新增 `tavily_research` 和 `tavily_feedback`；保留连字符旧名称与 `search` 调用别名。补入 `exact_match`、发布日期过滤、研究附件等官方字段，并保留 `include_answer`、`auto_parameters`、`chunks_per_source` 等 REST 扩展。托管 MCP 当次返回 5 个工具，开源版本额外提供 feedback；feedback 直接调用官方 REST。
+- Exa：12 个官方工具完整透传，包括 `web_search_exa`、`web_fetch_exa`、`web_search_advanced_exa`、`agent_run`，以及 8 个兼容工具。托管版 `web_search_exa` 当前要求 `objective`。使用官方托管 MCP 执行，无需手工重写工具字段或研究流程；快照会随上游变更需要重新核对。
+- 两个渠道各有独立的加权轮询密钥池；限流暂时冷却，鉴权/额度错误切换 Key。研究任务 ID 与创建它的 Key 持久绑定；非幂等研究任务遇到网络故障不自动重放，避免重复收费。若超时发生在收到任务 ID 之前，无法自动恢复该任务。
+- Exa 使用独立的费用账本与可选的官方用量同步，不使用 Tavily 的额度接口。多 Key 分配、计费和故障切换通过本地模拟测试验证；本轮计费升级没有追加真实搜索调用。
+
+### 决策模型审查
+
+在「系统设置」填写 Base URL、API Key、模型 ID（默认 `decision-model-preview`）。接口使用百炼官方 [System One 协议](https://help.aliyun.com/zh/model-studio/decision-model-api)，不是 chat completions。API Key 使用数据库已有 AES-GCM 加密，页面不回传明文；留空保留旧密钥。可先用「测试连接」发送一条普通文本。
+
+同时打开总开关和对应渠道开关后，每次输出在下发前进行审查：
+
+1. 将搜索条目、摘要、图片描述、结构化输出和普通文本分组，每批最多 16 个问题；长条目带重叠完整分片，不会只检查前缀。
+2. 使用 `noul` 概率判断风险；超过阈值时删除对应条目，不在返回值中复述被删除内容。
+3. 上游明确返回内容审查拒绝时，二分批次定位异常条目。鉴权错误、限流、网络错误、格式异常不视为内容证据，直接返回审查不可用错误。
+4. 总时限、并发和调用次数均有上限。超过预算时不转发未审查内容；非文本 MCP 图片/音频/资源块无法由文本决策模型审查，启用时会被移除。
+5. 文字与 `structuredContent` 都会处理，防止另一个表示泄漏原内容。结构化结果中的任意嵌套文本会审查，必要时整块移除；剔除可能导致返回对象不再满足上游声明的输出 schema，因此网关不宣告上游 outputSchema（审查开关可随时改变），输入 schema 保持完整。
+
+默认总开关关闭；Tavily/Exa 可分别启用。审查会增加延迟和 token 费用。模型可能误判或漏判，不能承诺「完全无毒」或绕过所有下游拒答。日志中的 `moderation` 只记录数量、调用次数和耗时，不记录被筛除正文；响应 `_meta.gateway_review` 提供本次审查摘要。
+
+### 稳定性与运维改进
+
+本次升级前检查了现网保留的 14,778 条日志和 50 个 Tavily Key（40 个 active、10 个 banned）。错误记录主要来自配额同步：1,220 条，占全部 1,440 条错误的约 85%；搜索失败 214 条、提取失败 6 条。数据库约 646 MB，旧版长响应正文占用了大量空间。这些数据反映当前保留期内的记录，不能当作全生命周期统计，也不代表搜索结果质量。
+
+- 更新 MCP SDK，修复 SSE 重复转义、未知会话仍执行计费请求、跨渠道会话串用、通知响应不规范和空闲连接被定时关闭。
+- 加入参数验证、全局有界并发/排队与请求总时限；保留 false、0 和空数组，修复原先白名单静默丢字段。
+- 修正 `rate limit exceeded` 被误识别为额度耗尽、失效 Key 不故障切换、未知额度在同月被错误恢复等问题；后台配额同步跳过已禁用或鉴权失效的 Key，仍可手动同步全部。
+- 工具成功率和延迟排除配额同步及审查；请求日志列表不再加载响应大字段。新请求默认不保存正文，可在设置中打开脱敏、限长记录。历史日志按原保留规则清理，不主动清空历史数据；SQLite 已分配空间不会因此立刻缩小。
+- 后台采用响应式中文界面；渠道地址可复制、工具定义可展开、Key 可筛选和批量管理、权重可编辑；连接状态来源于真实 WebSocket。
+
+### 验证与回滚
+
+```bash
+npm ci
+npm run build
+npm test -- --runInBand
+npm run test:integration  # 本地模拟，覆盖两个传输和三个地址前缀；不消耗上游额度
+cd web && npm ci && npm test && npm run build
+```
+
+升级前用 SQLite backup API（或 `.backup`）备份 `data/tavily.db`，保留原加密密钥和旧容器镜像。运行中的 WAL 数据库不能只拷贝 `.db` 文件。迁移是增加列/表；回滚时停止服务、恢复备份并用旧镜像启动。不要在服务运行时执行 VACUUM 或覆盖数据库。
 
 <details>
 <summary>更新日志</summary>

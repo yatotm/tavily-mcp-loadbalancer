@@ -54,6 +54,21 @@ describe('keys store', () => {
     expect(store.keys).toEqual(keys)
   })
 
+  it('keeps the latest provider page when an earlier response arrives late', async () => {
+    const store = useKeysStore()
+    let resolveEarlier!: (value: unknown) => void
+    apiMock.get.mockImplementationOnce(() => new Promise(resolve => { resolveEarlier = resolve }))
+    const earlier = store.fetchKeys({ provider: 'tavily', page: 3, limit: 10 })
+    apiMock.get.mockResolvedValueOnce({ keys: [{ id: 51, provider: 'exa' }], total: 1, page: 1 })
+    await store.fetchKeys({ provider: 'exa', page: 1, limit: 20, keyword: 'team 1' })
+    resolveEarlier({ keys: [{ id: 21, provider: 'tavily' }], total: 50, page: 3 })
+    await earlier
+    expect(store.keys[0].id).toBe(51)
+    expect(store.total).toBe(1)
+    expect(store.currentPage).toBe(1)
+    expect(apiMock.get).toHaveBeenLastCalledWith('/api/keys?provider=exa&page=1&limit=20&keyword=team+1')
+  })
+
   it('adds a key to state', async () => {
     const store = useKeysStore()
     const key: KeyRecord = {
@@ -216,8 +231,62 @@ describe('keys store', () => {
     expect(await store.batchTest([7])).toEqual(queue)
     expect(await store.fetchUsageSyncStatus()).toEqual(queue.queue)
 
-    expect(apiMock.post).toHaveBeenNthCalledWith(1, '/api/keys/import', { keys: ['one', 'two'] })
+    expect(apiMock.post).toHaveBeenNthCalledWith(1, '/api/keys/import', { keys: ['one', 'two'], provider: 'tavily' })
     expect(apiMock.put).toHaveBeenCalledWith('/api/keys/7', { display_name: 'After' })
     expect(apiMock.get).toHaveBeenCalledWith('/api/settings/sync/status')
+  })
+
+  it('batch deletion only removes confirmed IDs and prevents stale list requests from restoring them', async () => {
+    const store = useKeysStore()
+    const records = [{ id: 1 }, { id: 2 }, { id: 3 }] as KeyRecord[]
+    store.keys = records
+    let resolveEarlier!: (value: unknown) => void
+    apiMock.get.mockImplementationOnce(() => new Promise(resolve => { resolveEarlier = resolve }))
+    const earlier = store.fetchKeys({ provider: 'exa', page: 1, limit: 20 })
+    apiMock.post.mockResolvedValueOnce({ deleted: 2, ids: [1, 2] })
+    expect(await store.batchDelete([1, 2], 'exa')).toBe(2)
+    expect(apiMock.post).toHaveBeenCalledWith('/api/keys/batch/delete', { ids: [1, 2], provider: 'exa' })
+    resolveEarlier({ keys: records, total: 3, page: 1 })
+    await earlier
+    expect(store.keys.map(k => k.id)).toEqual([3])
+    apiMock.post.mockRejectedValueOnce(new Error('Delete failed'))
+    await expect(store.batchDelete([3], 'exa')).rejects.toThrow('Delete failed')
+    expect(store.keys.map(k => k.id)).toEqual([3])
+  })
+
+  it('tests only the requested key and reads its queued result', async () => {
+    const store = useKeysStore()
+    apiMock.post.mockResolvedValueOnce({ status: 'queued' })
+    apiMock.get.mockResolvedValueOnce({ id: 7, usage_sync: { last_status: 'success' } })
+    expect(await store.testKey(7)).toEqual({ status: 'queued' })
+    expect((await store.fetchKey(7)).usage_sync?.last_status).toBe('success')
+    expect(apiMock.post).toHaveBeenCalledWith('/api/keys/7/test')
+    expect(apiMock.get).toHaveBeenCalledWith('/api/keys/7')
+  })
+
+  it('imports into Exa and handles an empty pool response', async () => {
+    const store = useKeysStore()
+    apiMock.get.mockResolvedValue({})
+    expect(await store.fetchKeys()).toEqual([])
+    apiMock.post.mockResolvedValue({ inserted: 1 })
+    expect(await store.importKeys(['exa-test'], 'exa')).toBe(1)
+    expect(apiMock.post).toHaveBeenCalledWith('/api/keys/import', { keys: ['exa-test'], provider: 'exa' })
+    apiMock.put.mockResolvedValue({ status: 'ok' })
+    await store.updateKey(999, { weight: 3 })
+    expect(store.keys).toEqual([])
+  })
+
+  it('applies edited rotation settings and leaves unselected keys unchanged', async () => {
+    const store = useKeysStore()
+    const key = { id: 1, display_name: 'Primary', weight: 1, max_errors: 3, status: 'active' } as KeyRecord
+    store.keys = [key, { ...key, id: 2, display_name: 'Other channel' }]
+    apiMock.put.mockResolvedValue({ status: 'ok' })
+    apiMock.post.mockResolvedValue({ status: 'ok' })
+    await store.updateKey(1, { weight: 4, max_errors: 6 })
+    expect(store.keys[0]).toMatchObject({ display_name: 'Primary', weight: 4, max_errors: 6 })
+    await store.batchDisable([1])
+    expect(store.keys.map(k => k.status)).toEqual(['disabled', 'active'])
+    await store.batchEnable([2])
+    expect(store.keys.map(k => k.status)).toEqual(['disabled', 'active'])
   })
 })

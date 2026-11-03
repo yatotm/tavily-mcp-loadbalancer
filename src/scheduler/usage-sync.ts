@@ -1,7 +1,11 @@
 import axios from 'axios';
+import { classifyError, ErrorType } from '../loadbalancer/error-classifier.js';
+import { UpstreamFailure } from '../client/request-executor.js';
+import { nextReset } from '../loadbalancer/quota-policy.js';
 import { AppDatabase } from '../data/database.js';
 import { UsageClient } from '../client/usage-client.js';
 import { logger } from '../utils/logger.js';
+import { serializePayloadForLog } from '../client/logging-utils.js';
 import { config } from '../utils/config.js';
 import { EventBus } from '../core/event-bus.js';
 
@@ -41,7 +45,7 @@ interface UsageSyncOptions {
 }
 
 interface ParsedUsageError {
-  type: 'auth' | 'rate_limit' | 'network';
+  type: ErrorType;
   message: string;
   responseData: unknown;
   retryAfterMs: number | null;
@@ -57,15 +61,7 @@ const priorityFor = (reason: UsageSyncReason): number => {
   }
 };
 
-const stringifyLogData = (data: unknown): string | null => {
-  if (data === undefined || data === null) return null;
-  try {
-    const json = JSON.stringify(data);
-    return json.length > 50000 ? `${json.slice(0, 50000)}...(truncated)` : json;
-  } catch {
-    return null;
-  }
-};
+const stringifyLogData = serializePayloadForLog;
 
 const parseRetryAfterMs = (value: unknown): number | null => {
   const raw = Array.isArray(value) ? value[0] : value;
@@ -80,33 +76,10 @@ const parseRetryAfterMs = (value: unknown): number | null => {
 };
 
 const parseUsageError = (error: unknown): ParsedUsageError => {
-  if (!axios.isAxiosError(error)) {
-    return {
-      type: 'network',
-      message: error instanceof Error ? error.message : String(error || 'Usage sync failed'),
-      responseData: null,
-      retryAfterMs: null,
-    };
-  }
-
-  const status = error.response?.status;
-  const data = error.response?.data as any;
-  const detail = data?.detail;
-  const message =
-    (typeof detail === 'string' && detail) ||
-    (detail && typeof detail === 'object' && (detail.error || detail.message || detail.detail)) ||
-    data?.error ||
-    data?.message ||
-    error.message;
-  const normalized = String(message).toLowerCase();
-  const rateLimited = status === 429 || normalized.includes('excessive requests') || normalized.includes('rate limit');
-
-  return {
-    type: status === 401 || status === 403 ? 'auth' : rateLimited ? 'rate_limit' : 'network',
-    message: String(message || error.message),
-    responseData: data ?? null,
-    retryAfterMs: parseRetryAfterMs(error.response?.headers?.['retry-after']),
-  };
+  const result = error instanceof UpstreamFailure ? error.classification : classifyError(error);
+  return { type: result.type, message: result.message,
+    responseData: axios.isAxiosError(error) ? error.response?.data ?? null : null,
+    retryAfterMs: axios.isAxiosError(error) ? parseRetryAfterMs(error.response?.headers?.['retry-after']) : null };
 };
 
 export class UsageSyncScheduler {
@@ -154,14 +127,15 @@ export class UsageSyncScheduler {
   }
 
   enqueueAll(): UsageSyncEnqueueResult {
-    return this.enqueueKeys(this.db.getApiKeys().map((key) => key.id), 'all');
+    return this.enqueueKeys(this.db.getApiKeys('tavily').map((key) => key.id), 'all');
   }
 
   enqueueStale(reason: 'stale' | 'scheduled' = 'stale'): UsageSyncEnqueueResult {
     const cutoff = Date.now() - this.staleAfterMs;
     const states = new Map(this.db.getUsageSyncStates().map((state) => [state.key_id, state]));
-    const ids = this.db.getApiKeys()
+    const ids = this.db.getApiKeys('tavily')
       .filter((key) => {
+        if (key.status === 'banned' || key.status === 'disabled') return false;
         const lastSuccessAt = states.get(key.id)?.last_success_at;
         return !lastSuccessAt || Date.parse(lastSuccessAt) <= cutoff;
       })
@@ -179,7 +153,7 @@ export class UsageSyncScheduler {
 
     for (const keyId of uniqueIds) {
       try {
-        this.db.getApiKeyById(keyId);
+        if (this.db.getApiKeyById(keyId).provider !== 'tavily') { missing += 1; continue; }
       } catch {
         missing += 1;
         continue;
@@ -229,11 +203,15 @@ export class UsageSyncScheduler {
   }
 
   cancelKey(keyId: number): void {
-    const task = this.pending.get(keyId);
-    if (!task) return;
-    this.pending.delete(keyId);
-    this.queue = this.queue.filter((item) => item.keyId !== keyId);
-    this.emitStatus();
+    this.cancelKeys([keyId]);
+  }
+
+  cancelKeys(keyIds: number[]): void {
+    const ids = new Set(keyIds);
+    const previousLength = this.queue.length;
+    for (const id of ids) this.pending.delete(id);
+    this.queue = this.queue.filter(item => !ids.has(item.keyId));
+    if (this.queue.length !== previousLength) this.emitStatus();
   }
 
   getStatus(): UsageSyncQueueStatus {
@@ -296,12 +274,30 @@ export class UsageSyncScheduler {
     let shouldRequeue = false;
     try {
       const key = this.db.getApiKeyById(task.keyId);
+      if ((key.status === 'banned' || key.status === 'disabled') && !task.reasons.has('manual_test') && !task.reasons.has('all')) {
+        this.db.markUsageSyncFailure(key.id, 'error', '密钥已停止，跳过后台同步');
+        return;
+      }
       const usage = await this.usageClient.fetchUsageAndSync(key.id, key.key_value);
       this.db.markUsageSyncSuccess(key.id);
+      this.eventBus?.emitEvent('key_status',{ id: key.id });
       this.logResult(task, 'success', usage, Date.now() - startedAt, null, null);
       logger.info('Usage sync task completed', { keyId: key.id, reasons: Array.from(task.reasons) });
     } catch (error: unknown) {
       const parsed = parseUsageError(error);
+      let failedKey;
+      try { failedKey = this.db.getApiKeyById(task.keyId); }
+      catch { return; } // The key may have been deleted while the request was in flight.
+      parsed.message = parsed.message.split(failedKey.key_value).join('[redacted]').slice(0,500);
+      if (parsed.type === 'auth') this.db.updateApiKeyStatus(task.keyId,'banned');
+      if (parsed.type === 'quota_exceeded' && failedKey.status !== 'banned' && failedKey.status !== 'disabled') {
+        this.db.updateApiKeyStatus(task.keyId,'quota_exceeded');
+        this.db.setQuotaPause(task.keyId,'TAVILY_USAGE_LIMIT',nextReset('tavily','TAVILY_USAGE_LIMIT'));
+      }
+      if (parsed.type === 'auth' || parsed.type === 'quota_exceeded') {
+        this.db.setKeyLastError(task.keyId,parsed.message);
+        this.eventBus?.emitEvent('key_status',{id:task.keyId});
+      }
       this.logResult(task, 'error', parsed.responseData, Date.now() - startedAt, parsed.type, parsed.message);
       if (parsed.type === 'rate_limit') {
         const delayMs = Math.max(parsed.retryAfterMs ?? this.retryDelayMs, 1000);

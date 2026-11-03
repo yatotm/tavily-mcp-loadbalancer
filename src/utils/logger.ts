@@ -1,4 +1,4 @@
-import { config } from './config.js';
+import { getRuntimeConfig } from './runtime-config.js';
 
 export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
 
@@ -9,18 +9,11 @@ const levels: Record<LogLevel, number> = {
   debug: 3,
 };
 
-const currentLevel = ((): LogLevel => {
-  const level = config.logLevel as LogLevel;
-  return level in levels ? level : 'info';
-})();
-
-const shouldLog = (level: LogLevel): boolean => {
-  return levels[level] <= levels[currentLevel];
-};
+const shouldLog = (level: LogLevel): boolean => levels[level] <= (levels[getRuntimeConfig().logLevel as LogLevel] ?? levels.info);
 
 const formatMessage = (level: LogLevel, message: string, meta?: Record<string, unknown>): string => {
   const timestamp = new Date().toISOString();
-  if (config.logFormat === 'json') {
+  if (getRuntimeConfig().logFormat === 'json') {
     return JSON.stringify({
       timestamp,
       level,

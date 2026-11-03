@@ -1,156 +1,83 @@
-import { toolDefinitions } from './definitions.js';
+import fs from 'node:fs';
+import { Ajv } from 'ajv';
+import { Tool, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { TavilyClient } from '../../client/tavily-client.js';
-import { formatResults, formatCrawlResults, formatMapResults } from '../../client/response-formatter.js';
+import { RemoteClient } from '../../providers/remote-client.js';
+import { ResultReviewer } from '../../moderation/reviewer.js';
+import { Provider } from '../../data/database.js';
 import { getRuntimeConfig } from '../../utils/runtime-config.js';
-import { logger } from '../../utils/logger.js';
 
-const removeEmpty = (params: Record<string, unknown>): Record<string, unknown> => {
-  const cleaned: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(params)) {
-    if (value === '' || value === null || value === undefined) continue;
-    if (Array.isArray(value) && value.length === 0) continue;
-    cleaned[key] = value;
-  }
-  return cleaned;
-};
-
-/**
- * Normalize time_range to valid Tavily API values by keyword detection.
- */
-const normalizeTimeRange = (value: unknown): string | undefined => {
-  if (value === null || value === undefined || value === '') return undefined;
-
-  const str = String(value).toLowerCase();
-  const valid = ['day', 'week', 'month', 'year', 'd', 'w', 'm', 'y'];
-  if (valid.includes(str)) return str;
-
-  // Keyword detection: year > month > week > day
-  if (/year/i.test(str)) return 'year';
-  if (/month/i.test(str)) return 'month';
-  if (/week/i.test(str)) return 'week';
-  if (/day|hour/i.test(str)) return 'day';
-
-  logger.warn('Invalid time_range, ignoring', { value });
-  return undefined;
-};
+export const upstreamTools = (provider: Provider): Tool[] => JSON.parse(fs.readFileSync(new URL(`../../providers/${provider}-tools.json`, import.meta.url), 'utf8'));
+const originalTavily = upstreamTools('tavily');
+const originalExa = upstreamTools('exa');
+// Preserve the legacy public names while exposing current official names and complete schemas.
+const aliases: Record<string, string> = { search: 'tavily_search', ...Object.fromEntries(originalTavily.map(t => [t.name.replace('tavily_', 'tavily-'), t.name])) };
 
 export class ToolRouter {
-  constructor(private tavilyClient: TavilyClient) {}
-
-  listTools() {
-    return toolDefinitions;
-  }
-
-  async callTool(name: string, args: any) {
-    switch (name) {
-      case 'tavily-search':
-      case 'search': {
-        const runtime = getRuntimeConfig();
-        const defaults = runtime.defaultParameters || {};
-        const payload: Record<string, unknown> = {
-          query: args?.query,
-          search_depth: args?.search_depth,
-          topic: args?.topic,
-          days: args?.days,
-          time_range: normalizeTimeRange(args?.time_range),
-          max_results: args?.max_results,
-          include_images: args?.include_images,
-          include_image_descriptions: args?.include_image_descriptions,
-          include_raw_content: args?.include_raw_content,
-          include_domains: Array.isArray(args?.include_domains) ? args.include_domains : [],
-          exclude_domains: Array.isArray(args?.exclude_domains) ? args.exclude_domains : [],
-          country: args?.country,
-          include_favicon: args?.include_favicon,
-          start_date: args?.start_date,
-          end_date: args?.end_date,
-        };
-
-        for (const key of Object.keys(defaults)) {
-          if (payload[key] === undefined || payload[key] === null) {
-            payload[key] = (defaults as any)[key];
-          }
-        }
-
-        if (payload.country) {
-          payload.topic = 'general';
-        }
-
-        if ((payload.start_date || payload.end_date) && (payload.time_range || payload.days)) {
-          payload.time_range = undefined;
-          payload.days = undefined;
-        }
-
-        const cleaned = removeEmpty(payload);
-        logger.info('Search request params', {
-          has_query: typeof cleaned.query === 'string' && cleaned.query.trim().length > 0,
-          topic: cleaned.topic,
-          search_depth: args?.search_depth,
-          cleaned_search_depth: cleaned.search_depth,
-        });
-        const response = await this.tavilyClient.search(cleaned);
-        return {
-          content: [{ type: 'text', text: formatResults(response) }],
-        };
+  private tools: Record<Provider, Tool[]>;
+  private ajv = new Ajv({ strict: false, allErrors: false, validateFormats: false });
+  private validators = new Map<string, ReturnType<Ajv['compile']>>();
+  constructor(private tavilyClient: TavilyClient, private exaClient?: RemoteClient, private tavilyRemote?: RemoteClient, private reviewer?: ResultReviewer) {
+    const tavily = structuredClone(originalTavily);
+    const search = tavily.find(t => t.name === 'tavily_search')!;
+    const props = search.inputSchema.properties as any;
+    props.max_results.minimum = 0; // Existing clients and the REST API allow smaller result counts.
+    props.include_answer = { anyOf: [{ type: 'boolean' }, { enum: ['basic', 'advanced'] }] };
+    props.include_raw_content = { anyOf: [{ type: 'boolean' }, { enum: ['text', 'markdown'] }] };
+    props.auto_parameters = { type: 'boolean' };
+    props.include_usage = { type: 'boolean' };
+    props.chunks_per_source = { type: 'integer', minimum: 1, maximum: 3 };
+    props.days = { type: 'integer', minimum: 1 };
+    for (const t of tavily) {
+      const p = t.inputSchema.properties as any;
+      if (['tavily_crawl', 'tavily_extract'].includes(t.name)) {
+        p.chunks_per_source = { type: 'integer', minimum: 1, maximum: 5 };
+        p.timeout = { type: 'number', minimum: 1, maximum: 150 };
       }
-
-      case 'tavily-extract': {
-        const payload: Record<string, unknown> = {
-          urls: Array.isArray(args?.urls) ? args.urls : [],
-          extract_depth: args?.extract_depth,
-          include_images: args?.include_images,
-          format: args?.format,
-          include_favicon: args?.include_favicon,
-          query: args?.query,
-        };
-        const cleaned = removeEmpty(payload);
-        const response = await this.tavilyClient.extract(cleaned);
-        return {
-          content: [{ type: 'text', text: formatResults(response) }],
-        };
+      if (['tavily_crawl', 'tavily_map'].includes(t.name)) {
+        p.exclude_paths = { type: 'array', items: { type: 'string' } };
+        p.exclude_domains = { type: 'array', items: { type: 'string' } };
+        p.allow_subdomains = { type: 'boolean' };
       }
-
-      case 'tavily-crawl': {
-        const payload: Record<string, unknown> = {
-          url: args?.url,
-          max_depth: args?.max_depth,
-          max_breadth: args?.max_breadth,
-          limit: args?.limit,
-          instructions: args?.instructions,
-          select_paths: Array.isArray(args?.select_paths) ? args.select_paths : [],
-          select_domains: Array.isArray(args?.select_domains) ? args.select_domains : [],
-          allow_external: args?.allow_external,
-          extract_depth: args?.extract_depth,
-          format: args?.format,
-          include_favicon: args?.include_favicon,
-          chunks_per_source: 3,
-        };
-        const cleaned = removeEmpty(payload);
-        const response = await this.tavilyClient.crawl(cleaned);
-        return {
-          content: [{ type: 'text', text: formatCrawlResults(response) }],
-        };
-      }
-
-      case 'tavily-map': {
-        const payload: Record<string, unknown> = {
-          url: args?.url,
-          max_depth: args?.max_depth,
-          max_breadth: args?.max_breadth,
-          limit: args?.limit,
-          instructions: args?.instructions,
-          select_paths: Array.isArray(args?.select_paths) ? args.select_paths : [],
-          select_domains: Array.isArray(args?.select_domains) ? args.select_domains : [],
-          allow_external: args?.allow_external,
-        };
-        const cleaned = removeEmpty(payload);
-        const response = await this.tavilyClient.map(cleaned);
-        return {
-          content: [{ type: 'text', text: formatMapResults(response) }],
-        };
-      }
-
-      default:
-        throw new Error(`Unknown tool: ${name}`);
     }
+    this.tools = { tavily, exa: originalExa };
+  }
+  listTools(provider: Provider = 'tavily'): Tool[] {
+    const tools = provider === 'exa' ? this.tools.exa : [...this.tools.tavily, ...this.tools.tavily.map(t => ({ ...t, name: t.name.replace('tavily_', 'tavily-') }))];
+    // Filtering can remove fields; do not promise an output schema that runtime review can invalidate.
+    return tools.map(({ outputSchema, ...tool }) => tool);
+  }
+  async callTool(name: string, args: any, provider: Provider = 'tavily'): Promise<CallToolResult> {
+    const canonical = provider === 'tavily' ? aliases[name] || name : name;
+    const definition = this.tools[provider].find(t => t.name === canonical);
+    if (!definition) throw new Error(`Unknown ${provider} tool: ${name}`);
+    if (args !== undefined && (!args || typeof args !== 'object' || Array.isArray(args))) throw new Error('Tool arguments must be an object');
+    let payload = { ...(args || {}) };
+    if (canonical === 'tavily_search') {
+      payload = { ...getRuntimeConfig().defaultParameters, ...payload };
+      const ranges: Record<string, string> = { d: 'day', w: 'week', m: 'month', y: 'year' };
+      if (ranges[payload.time_range]) payload.time_range = ranges[payload.time_range];
+      if (payload.country) payload.topic = 'general';
+      if (payload.start_date || payload.end_date) { delete payload.time_range; delete payload.days; }
+    }
+    // Empty optional strings from older clients are treated as omitted, never discard false/zero/arrays.
+    for (const [key, value] of Object.entries(payload)) if (value === '' && !(definition.inputSchema.required || []).includes(key)) delete payload[key];
+    if ('api_key' in payload || 'apiKey' in payload) throw new Error('Credentials are managed by the gateway key pool');
+    const key = `${provider}:${canonical}`;
+    if (!this.validators.has(key)) this.validators.set(key, this.ajv.compile(definition.inputSchema));
+    const validate = this.validators.get(key)!;
+    if (!validate(payload)) throw new Error(`Invalid tool arguments: ${this.ajv.errorsText(validate.errors)}`);
+    let result: CallToolResult;
+    const operation = canonical.replace('tavily_', '');
+    if (provider === 'tavily' && ['search', 'extract', 'crawl', 'map', 'feedback'].includes(operation)) {
+      const data = await (this.tavilyClient as any)[operation](payload);
+      const reviewed = this.reviewer ? await this.reviewer.review(provider, { content: [{ type: 'text', text: JSON.stringify(data) }] }) : { content: [{ type: 'text', text: JSON.stringify(data) }] };
+      return reviewed;
+    } else {
+      const client = provider === 'exa' ? this.exaClient : this.tavilyRemote;
+      if (!client) throw new Error('Provider is not configured');
+      result = await client.call(canonical, payload);
+    }
+    return this.reviewer ? this.reviewer.review(provider, result) : result;
   }
 }

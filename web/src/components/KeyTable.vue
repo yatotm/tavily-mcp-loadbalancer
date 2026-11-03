@@ -6,16 +6,24 @@ import { Delete, RefreshLeft, VideoPause, VideoPlay, Edit } from '@element-plus/
 defineProps<{
   keys: KeyRecord[]
   loading?: boolean
+  provider?: string
+  tests?: Record<number, { status: string; message: string }>
 }>()
 
 const emit = defineEmits<{
+  (e: 'billing', id: number): void
+  (e: 'test', id: number): void
   (e: 'enable', id: number): void
   (e: 'disable', id: number): void
   (e: 'reset', id: number): void
   (e: 'delete', id: number): void
+  (e: 'updateWeight', id: number, weight: number): void
   (e: 'updateName', id: number, displayName: string): void
   (e: 'selection-change', selection: KeyRecord[]): void
 }>()
+
+const table = ref<any>()
+defineExpose({ clearSelection: () => table.value?.clearSelection() })
 
 // Inline editing state
 const editingId = ref<number | null>(null)
@@ -59,6 +67,7 @@ const statusType = (status: string) => {
 }
 
 const quotaLimitLabel = (row: KeyRecord) => {
+  if (row.provider === 'exa') return '按实际账单'
   if (row.quota?.quota_limit !== null && row.quota?.quota_limit !== undefined) {
     return row.quota.quota_limit
   }
@@ -69,6 +78,7 @@ const quotaLimitLabel = (row: KeyRecord) => {
 }
 
 const syncStatusLabel = (row: KeyRecord) => {
+  if (row.provider === 'exa') return 'Exa 不进行配额探测'
   switch (row.usage_sync?.last_status) {
     case 'pending': return '队列中'
     case 'running': return '同步中'
@@ -85,8 +95,8 @@ const handleSelectionChange = (selection: KeyRecord[]) => {
 </script>
 
 <template>
-  <el-table :data="keys" stripe v-loading="!!loading" style="width: 100%" @selection-change="handleSelectionChange">
-    <el-table-column type="selection" width="48" />
+  <el-table ref="table" row-key="id" empty-text="还没有符合条件的密钥，添加一个开始使用" :data="keys" stripe v-loading="!!loading" style="width: 100%" @selection-change="handleSelectionChange">
+    <el-table-column type="selection" width="44" /><el-table-column prop="id" label="ID" width="60"/>
 
     <el-table-column label="Key" width="150">
       <template #default="{ row }">
@@ -94,11 +104,12 @@ const handleSelectionChange = (selection: KeyRecord[]) => {
       </template>
     </el-table-column>
 
-    <el-table-column label="状态" width="130">
+    <el-table-column label="状态" width="112">
       <template #default="{ row }">
-        <el-tag :type="statusType(row.status)" size="small">
-          {{ row.status }}
+        <el-tag :type="statusType(row.status)" size="small" :title="row.last_error_message || ''">
+          {{ ({ active: '可用', disabled: '已停用', quota_exceeded: '额度暂停', banned: '密钥失效' } as any)[row.status] || row.status }}
         </el-tag>
+        <small v-if="tests?.[row.id]" class="key-test-result" :class="{ 'text-danger': tests[row.id].status==='error' }" :title="tests[row.id].message">{{ ({running:'测试中',queued:'等待测试',success:'测试通过',error:'测试失败'} as any)[tests[row.id].status] }}</small>
       </template>
     </el-table-column>
 
@@ -120,7 +131,7 @@ const handleSelectionChange = (selection: KeyRecord[]) => {
         <template v-else>
           <span
             class="key-name editable"
-            @click="startEdit(row)"
+            @click="startEdit(row as KeyRecord)"
             :title="row.display_name ? '点击编辑' : '点击添加备注'"
           >
             {{ row.display_name || '点击添加...' }}
@@ -130,7 +141,7 @@ const handleSelectionChange = (selection: KeyRecord[]) => {
       </template>
     </el-table-column>
 
-    <el-table-column label="请求" min-width="140">
+    <el-table-column label="成功 / 总请求" width="120">
       <template #default="{ row }">
         <div class="stats-col">
           <span class="success">{{ row.successful_requests }}</span> /
@@ -139,37 +150,46 @@ const handleSelectionChange = (selection: KeyRecord[]) => {
       </template>
     </el-table-column>
 
-    <el-table-column label="错误" width="80">
+    <el-table-column label="权重" width="118"><template #default="{ row }"><el-input-number :model-value="row.weight" :min="1" :max="100" size="small" controls-position="right" style="width:100px" @change="(value:number|undefined) => value && emit('updateWeight', row.id, value)" /></template></el-table-column>
+    <el-table-column label="错误" width="65">
       <template #default="{ row }">
         <span :class="{ 'text-danger': row.error_count > 0 }">{{ row.error_count }}</span>
       </template>
     </el-table-column>
 
-    <el-table-column label="配额" min-width="150">
+    <el-table-column :label="provider==='exa'?'费用 / USD':'当月配额'" min-width="190">
       <template #default="{ row }">
-        <div class="quota-cell" :title="syncStatusLabel(row)">
-          <span>{{ row.quota?.used_count ?? 0 }} / {{ quotaLimitLabel(row) }}</span>
-          <small>{{ syncStatusLabel(row) }}</small>
+        <div v-if="row.provider==='exa'" class="quota-cell">
+          <span>${{ (row.billing?.total_usd ?? 0).toFixed(4) }} <small>本月网关记录</small></span>
+          <small v-if="row.billing?.estimated_usd">含估算 ${{ row.billing.estimated_usd.toFixed(4) }}</small>
+          <small v-if="row.billing?.unsettled">{{ row.billing.unsettled }} 个任务费用待确认</small>
+          <small v-if="row.quota_reset_at">恢复：{{ new Date(row.quota_reset_at).toLocaleDateString() }}</small>
+        </div>
+        <div v-else class="quota-cell" :title="syncStatusLabel(row as KeyRecord)">
+          <span>{{ row.quota?.used_count ?? 0 }} / {{ quotaLimitLabel(row as KeyRecord) }}</span>
+          <small>{{ syncStatusLabel(row as KeyRecord) }}</small>
         </div>
       </template>
     </el-table-column>
 
-    <el-table-column label="操作" width="140" fixed="right">
+    <el-table-column label="操作" :width="provider==='exa'?228:180" fixed="right">
       <template #default="{ row }">
         <div class="action-buttons">
+          <el-button link type="primary" :loading="['running','queued'].includes(tests?.[row.id]?.status || '')" :title="row.provider==='exa'?'单次 Lite 搜索，预计 $0.004；费用记入账本':'验证当前密钥并同步配额，不发起搜索'" @click="emit('test',row.id)">测试</el-button>
+          <el-button v-if="row.provider==='exa'" link @click="emit('billing',row.id)">费用</el-button>
           <button
-            class="action-btn"
+            class="action-btn" :title="row.status==='active'?'停用':'启用'" :aria-label="row.status==='active'?'停用密钥':'启用密钥'"
             :class="row.status === 'active' ? 'action-btn--warning' : 'action-btn--success'"
             @click="row.status === 'active' ? emit('disable', row.id) : emit('enable', row.id)"
           >
             <el-icon><VideoPause v-if="row.status === 'active'" /><VideoPlay v-else /></el-icon>
           </button>
 
-          <button class="action-btn" @click="emit('reset', row.id)">
+          <button class="action-btn" title="重置错误计数" aria-label="重置错误计数" @click="emit('reset', row.id)">
             <el-icon><RefreshLeft /></el-icon>
           </button>
 
-          <button class="action-btn action-btn--danger" @click="emit('delete', row.id)">
+          <button title="删除密钥" aria-label="删除密钥" class="action-btn action-btn--danger" @click="emit('delete', row.id)">
             <el-icon><Delete /></el-icon>
           </button>
         </div>
@@ -179,6 +199,8 @@ const handleSelectionChange = (selection: KeyRecord[]) => {
 </template>
 
 <style scoped>
+.key-test-result { display:block; margin-top:4px; color:var(--color-text-secondary); font-size:11px; }
+.key-test-result.text-danger { color:var(--color-danger); }
 .key-preview {
   font-family: monospace;
   background-color: var(--color-background);

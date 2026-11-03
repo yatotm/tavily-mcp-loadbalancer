@@ -43,6 +43,10 @@ export interface UsageSyncEnqueueResult {
 }
 
 export interface KeyRecord {
+  provider?: 'tavily' | 'exa'
+  quota_reason?: string | null
+  quota_reset_at?: string | null
+  billing?: { total_usd: number; reported_usd: number; estimated_usd: number; unsettled: number; official?: { usedUsd: number; period: string } } | null
   id: number
   key_preview: string
   display_name: string
@@ -63,19 +67,36 @@ export interface KeyRecord {
 }
 
 export interface KeyCreatePayload {
+  provider?: 'tavily' | 'exa'
   key_value: string
   display_name?: string
   weight?: number
   max_errors?: number
 }
 
+export interface KeyTestResult {
+  status: 'queued' | 'success' | 'error'
+  message?: string
+  durationMs?: number
+  costUsd?: number | null
+  costSource?: string
+}
+
 export const useKeysStore = defineStore('keys', () => {
   const keys = ref<KeyRecord[]>([])
   const api = useApi()
+  const total = ref(0), currentPage = ref(1)
+  let sequence = 0
 
-  const fetchKeys = async () => {
-    const data = await api.get<{ keys: KeyRecord[] }>('/api/keys')
-    keys.value = data.keys || []
+  const fetchKeys = async (params?: { provider: string; page: number; limit: number; keyword?: string; status?: string }) => {
+    const request = ++sequence
+    const query = params ? '?' + new URLSearchParams(Object.entries(params).map(([k,v])=>[k,String(v)])) : ''
+    const data = await api.get<{ keys: KeyRecord[]; total?: number; page?: number }>('/api/keys' + query)
+    if (request === sequence) {
+      keys.value = data.keys || []
+      total.value = data.total ?? keys.value.length
+      currentPage.value = data.page ?? 1
+    }
     return keys.value
   }
 
@@ -108,16 +129,18 @@ export const useKeysStore = defineStore('keys', () => {
     if (existing) existing.error_count = 0
   }
 
-  const importKeys = async (keyValues: string[]) => {
-    const data = await api.post<{ inserted: number }>('/api/keys/import', { keys: keyValues })
+  const importKeys = async (keyValues: string[], provider: 'tavily' | 'exa' = 'tavily') => {
+    const data = await api.post<{ inserted: number }>('/api/keys/import', { keys: keyValues, provider })
     return data.inserted
   }
 
   const updateKey = async (id: number, updates: { display_name?: string; weight?: number; max_errors?: number }) => {
     await api.put(`/api/keys/${id}`, updates)
     const existing = keys.value.find((key) => key.id === id)
-    if (existing && updates.display_name !== undefined) {
-      existing.display_name = updates.display_name
+    if (existing) {
+      for (const field of ['display_name', 'weight', 'max_errors'] as const) {
+        if (updates[field] !== undefined) Object.assign(existing, { [field]: updates[field] })
+      }
     }
   }
 
@@ -137,12 +160,23 @@ export const useKeysStore = defineStore('keys', () => {
     return api.post<UsageSyncEnqueueResult>('/api/keys/batch/test', { ids })
   }
 
+  const testKey = (id: number) => api.post<KeyTestResult>(`/api/keys/${id}/test`)
+  const fetchKey = (id: number) => api.get<KeyRecord>(`/api/keys/${id}`)
+
+  const batchDelete = async (ids: number[], provider: 'tavily' | 'exa') => {
+    const data = await api.post<{ deleted: number; ids: number[] }>('/api/keys/batch/delete', { ids, provider })
+    sequence++ // A list request started before deletion must not restore the deleted rows.
+    const deletedIds = new Set(data.ids)
+    keys.value = keys.value.filter(key => !deletedIds.has(key.id))
+    return data.deleted
+  }
+
   const fetchUsageSyncStatus = async (): Promise<UsageSyncQueueStatus> => {
     return api.get<UsageSyncQueueStatus>('/api/settings/sync/status')
   }
 
   return {
-    keys,
+    keys, total, currentPage,
     fetchKeys,
     addKey,
     deleteKey,
@@ -154,6 +188,9 @@ export const useKeysStore = defineStore('keys', () => {
     batchEnable,
     batchDisable,
     batchTest,
+    testKey,
+    fetchKey,
+    batchDelete,
     fetchUsageSyncStatus,
   }
 })

@@ -5,6 +5,7 @@ import type { FormInstance, FormRules } from 'element-plus'
 const props = defineProps<{
   modelValue: boolean
   loading?: boolean
+  provider?: string
 }>()
 
 const emit = defineEmits<{
@@ -25,10 +26,10 @@ const rules = reactive<FormRules>({
 
 // Parse keys from input (comma or newline separated)
 const parsedKeys = computed(() => {
-  return form.keys_input
+  return [...new Set(form.keys_input
     .split(/[,\n]/)
     .map(k => k.trim())
-    .filter(k => k.length > 0)
+    .filter(k => k.length > 0))]
 })
 
 const keyCount = computed(() => parsedKeys.value.length)
@@ -53,7 +54,7 @@ const handleSubmit = async (formEl: FormInstance | undefined) => {
   <el-dialog
     :model-value="modelValue"
     @update:model-value="emit('update:modelValue', $event)"
-    title="新增 API Key"
+:title="`添加 ${provider === 'exa' ? 'Exa' : 'Tavily'} 密钥`"
     width="500px"
     @closed="handleClose"
   >
@@ -69,7 +70,8 @@ const handleSubmit = async (formEl: FormInstance | undefined) => {
           v-model="form.keys_input"
           type="textarea"
           :rows="4"
-          placeholder="输入 Tavily API Key，支持批量导入&#10;多个 Key 用英文逗号或换行分隔&#10;例如: tvly-xxx, tvly-yyy"
+          placeholder="每行一个 API Key，或使用英文逗号分隔"
+          autocomplete="off"
         />
       </el-form-item>
 

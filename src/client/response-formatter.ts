@@ -92,30 +92,4 @@ export const formatMapResults = (response: any): string => {
   return joined.length > 20000 ? `${joined.slice(0, 20000)}\n\n... [站点地图过长，已截断]` : joined;
 };
 
-export const sanitizeForSse = (payload: string): string => {
-  try {
-    const jsonObj = JSON.parse(payload);
-    if (jsonObj?.result?.content && Array.isArray(jsonObj.result.content)) {
-      jsonObj.result.content = jsonObj.result.content.map((item: any) => {
-        if (item?.text) {
-          item.text = String(item.text)
-            .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
-            .replace(/[\uFEFF\uFFFE\uFFFF]/g, '')
-            .replace(/\\/g, '\\\\')
-            .replace(/"/g, '\\"')
-            .replace(/\n/g, '\\n')
-            .replace(/\r/g, '\\r')
-            .replace(/\t/g, '\\t');
-        }
-        return item;
-      });
-    }
-    return JSON.stringify(jsonObj);
-  } catch {
-    return payload
-      .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
-      .replace(/[\uFEFF\uFFFE\uFFFF]/g, '')
-      .replace(/\n/g, '\\n')
-      .replace(/\r/g, '\\r');
-  }
-};
+export const sanitizeForSse = (payload: string): string => JSON.stringify(JSON.parse(payload));

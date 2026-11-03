@@ -103,7 +103,7 @@ const option = computed<EChartsOption>(() => {
         symbolSize: 6,
         data: chartData.value.map(item => item.count),
         itemStyle: {
-          color: '#3b82f6'
+          color: '#438770'
         },
         areaStyle: {
           opacity: 0.15

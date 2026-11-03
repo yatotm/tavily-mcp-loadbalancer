@@ -1,6 +1,7 @@
-import { AppDatabase, ApiKeyRecord, KeyStatus } from '../data/database.js';
+import { AppDatabase, ApiKeyRecord, KeyStatus, Provider } from '../data/database.js';
 import { logger } from '../utils/logger.js';
 import { KeySelector } from './key-selector.js';
+import { nextReset } from './quota-policy.js';
 
 export class KeyPool {
   private db: AppDatabase;
@@ -9,13 +10,13 @@ export class KeyPool {
   private selector = new KeySelector();
   private activeSignature = '';
 
-  constructor(db: AppDatabase) {
+  constructor(db: AppDatabase, public readonly provider: Provider = 'tavily') {
     this.db = db;
     this.reload();
   }
 
   reload(): void {
-    this.keys = this.db.getApiKeys();
+    this.keys = this.db.getApiKeys(this.provider);
     this.selector.reset(this.getActiveKeys());
     this.activeSignature = this.computeSignature(this.getActiveKeys());
   }
@@ -27,7 +28,7 @@ export class KeyPool {
   getActiveKeys(): ApiKeyRecord[] {
     const now = Date.now();
     return this.keys.filter((key) => {
-      if (key.status !== 'active') return false;
+      if (!key.key_value || key.status !== 'active') return false;
       const cooldown = this.cooldowns.get(key.id);
       if (cooldown && cooldown > now) return false;
       return true;
@@ -88,8 +89,21 @@ export class KeyPool {
   }
 
   updateStatus(keyId: number, status: KeyStatus): void {
+    if (status === 'active') {
+      this.clearCooldown(keyId); this.db.setQuotaPause(keyId, null, null);
+      this.updateKeyInMemory(keyId, { quota_reason: null, quota_reset_at: null });
+    }
     this.db.updateApiKeyStatus(keyId, status);
     this.updateKeyInMemory(keyId, { status });
+  }
+
+  pauseQuota(keyId: number, reason?: string): void {
+    const key = this.db.getApiKeyById(keyId);
+    if (key.status === 'banned' || key.status === 'disabled') return;
+    const resetAt = nextReset(this.provider, reason, this.provider === 'exa' ? this.db.exaBilling.getConfig(keyId) : undefined);
+    this.updateStatus(keyId, 'quota_exceeded');
+    this.db.setQuotaPause(keyId, reason || 'QUOTA_EXCEEDED', resetAt);
+    this.updateKeyInMemory(keyId, { quota_reason: reason || 'QUOTA_EXCEEDED', quota_reset_at: resetAt });
   }
 
   resetErrors(keyId: number): void {
@@ -98,13 +112,13 @@ export class KeyPool {
   }
 
   addKey(params: { keyValue: string; displayName?: string | null; weight?: number; maxErrors?: number }): ApiKeyRecord {
-    const record = this.db.addApiKey(params);
+    const record = this.db.addApiKey({ ...params, provider: this.provider });
     this.reload();
     return record;
   }
 
   importKeys(keys: Array<{ keyValue: string; displayName?: string | null }>): number {
-    const count = this.db.importApiKeys(keys);
+    const count = this.db.importApiKeys(keys.map(key => ({ ...key, provider: this.provider })));
     this.reload();
     return count;
   }

@@ -52,4 +52,15 @@ describe('stats store', () => {
     store.updateFromWs(overview)
     expect(store.overview).toEqual(overview)
   })
+
+  it('keeps existing metrics when a partial refresh omits them', () => {
+    const store = useStatsStore()
+    store.updateFromApi({ tools: { search: 2, extract: 1, crawl: 0, map: 0 }, timeline: { '2026-11-03': 3 } })
+    store.updateFromApi({})
+    store.updateFromApi({ keys: [] })
+    expect(store.tools?.search).toBe(2)
+    expect(store.timeline).toEqual({ '2026-11-03': 3 })
+    expect(store.keysSummary).toEqual([])
+    expect(store.overview).toBeNull()
+  })
 })

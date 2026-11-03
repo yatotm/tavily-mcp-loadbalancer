@@ -27,6 +27,8 @@ export class LogManager {
       logger.warn('Failed to write request logs batch', { error: error?.message });
       // requeue if failed
       this.queue.unshift(...batch);
+      // Bound memory if disk/database failure persists.
+      if (this.queue.length > 2000) this.queue.splice(2000);
     } finally {
       this.flushing = false;
     }

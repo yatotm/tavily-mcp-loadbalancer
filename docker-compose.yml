@@ -3,13 +3,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: tavily-mcp-loadbalancer:3.1.1
+    image: tavily-mcp-loadbalancer:4.1.2
     ports:
       - "60002:60002"
     environment:
       # 替换为你的实际API密钥，多个密钥用逗号分隔（首次种子导入）
       - TAVILY_API_KEYS=${TAVILY_API_KEYS:-}
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - EXA_API_KEYS=${EXA_API_KEYS:-}
+      - LOG_RESPONSE_BODIES=${LOG_RESPONSE_BODIES:-false}
       - PORT=60002
       - DATABASE_PATH=/app/data/tavily.db
       - DATABASE_ENCRYPTION_KEY=${DATABASE_ENCRYPTION_KEY:?DATABASE_ENCRYPTION_KEY required}

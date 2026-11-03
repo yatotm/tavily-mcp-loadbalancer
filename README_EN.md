@@ -1,5 +1,33 @@
 # Tavily MCP Load Balancer
 
+## v4.1.2 — Per-key tests
+
+Each key now has a Test action. Tavily validates the selected key through the existing paced usage queue and refreshes its quota. Exa sends one Lite search with one result (currently about $0.004), recorded in the fee ledger. Tests stay on the selected key, deduplicate concurrent clicks and show results or failure reasons. Exa tests are never automatically retried; a successful test does not re-enable banned or manually disabled keys.
+
+## v4.1.1 — Bulk key deletion
+
+Select keys on the current page and choose bulk delete, then confirm the provider and count. Both providers support atomic deletion, pending quota-sync cancellation, and automatic pagination refresh. Request logs and Exa cost history are retained. Changing pages or providers clears the selection.
+
+## v4.1 — Quotas, pagination and Exa billing (2026-11-03)
+
+The dashboard and statistics page again show Tavily used, known total, remaining and active-key quota. Exa costs remain separate in USD. Key lists use server-side pagination and filtering; logs and statistics share page-size controls. Decorative headings have been removed.
+
+Exa fees prefer upstream `costDollars`; otherwise the gateway estimates supported searches and contents from the official MCP request parameters and [published prices](https://exa.ai/docs/admin/pricing). Estimates are labeled. Metered jobs without authoritative costs remain unresolved; repeated polling updates one task charge. The independent ledger survives log retention and key deletion. Historical requests are not backfilled.
+
+Optional per-key Service Key/publicId settings enable the [official usage API](https://exa.ai/docs/reference/team-management/get-api-key-usage), requiring Team Management access. Ordinary search keys cannot use it. Credentials are encrypted; legacy secret fields are discarded. Official monthly usage and gateway charges are displayed separately, never summed.
+
+HTTP and MCP soft errors follow [official error semantics](https://exa.ai/docs/admin/error-codes): quota failures pause, invalid credentials stop, rate limits cool down, and feature/content restrictions do not ban keys. Automatic next-month eligibility applies only to exhausted free credit balance; budget resets need an explicit schedule, verified budget recovery or manual action. Free balance is team-wide and monthly grants apply to the first team, not every key. Banned and manually disabled keys never auto-resume. See the [Chinese documentation](README.md) for configuration details.
+
+> v4.0 (2026-11-03): this checkout now supports separate Tavily and Exa key pools,
+> namespaced `/tavily/{sse,mcp}` and `/exa/{sse,mcp}` endpoints, and optional
+> Bailian System One content review. Legacy Tavily endpoints remain available.
+> Build locally with `docker compose up -d --build`; these changes have not been
+> published to the upstream Docker image. See the [v4 upgrade notes](README.md)
+> for the complete tool inventory, review failure policy, tests and rollback steps.
+> Review defaults to off; uncertain or unavailable reviews fail closed when enabled.
+> Model-based classification cannot guarantee that every unsafe result is detected.
+
+
 [![Docker Hub](https://img.shields.io/docker/pulls/yatotm1994/tavily-mcp-loadbalancer?style=flat-square)](https://hub.docker.com/r/yatotm1994/tavily-mcp-loadbalancer)
 [![Docker Image Size](https://img.shields.io/docker/image-size/yatotm1994/tavily-mcp-loadbalancer?style=flat-square)](https://hub.docker.com/r/yatotm1994/tavily-mcp-loadbalancer)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)

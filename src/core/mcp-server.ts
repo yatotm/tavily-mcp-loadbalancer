@@ -10,8 +10,8 @@ export class McpStdioServer {
   constructor(private toolRouter: ToolRouter) {
     this.server = new Server({
       name: 'tavily-mcp-loadbalancer',
-      version: '3.0.0',
-    });
+      version: '4.1.2',
+    }, { capabilities: { tools: {} } });
 
     this.setupHandlers();
     this.setupErrorHandling();
@@ -19,13 +19,13 @@ export class McpStdioServer {
 
   private setupHandlers(): void {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
-      return { tools: this.toolRouter.listTools() };
+      return { tools: this.toolRouter.listTools(process.env.MCP_PROVIDER === 'exa' ? 'exa' : 'tavily') };
     });
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
       try {
-        const result = await this.toolRouter.callTool(name, args);
+        const result = await this.toolRouter.callTool(name, args, process.env.MCP_PROVIDER === 'exa' ? 'exa' : 'tavily');
         return result;
       } catch (error: any) {
         logger.error('Tool call failed', { name, error: error?.message });

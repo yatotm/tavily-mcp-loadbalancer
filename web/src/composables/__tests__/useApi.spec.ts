@@ -125,4 +125,21 @@ describe('useApi', () => {
     const [, options] = fetchMock.mock.calls[0]
     expect(options?.method).toBe('DELETE')
   })
+
+  it.each([
+    [{ message: 'Review temporarily unavailable' }, 'Review temporarily unavailable'],
+    [{}, 'Request failed with status 503'],
+    [null, 'Request failed with status 503'],
+  ])('surfaces service errors without logging the administrator out: %j', async (body, expected) => {
+    const auth = useAuthStore()
+    auth.login('secret')
+    vi.mocked(fetch).mockResolvedValue(createResponse({ ok: false, status: 503, body }))
+    await expect(useApi().get('/api/settings')).rejects.toThrow(expected)
+    expect(auth.token).toBe('secret')
+  })
+
+  it('surfaces non-JSON proxy errors', async () => {
+    vi.mocked(fetch).mockResolvedValue({ ok: false, status: 502, text: vi.fn().mockResolvedValue('Upstream unavailable') } as Response)
+    await expect(useApi().get('/api/keys')).rejects.toThrow('Upstream unavailable')
+  })
 })

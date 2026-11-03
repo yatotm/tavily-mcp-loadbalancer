@@ -1,4 +1,7 @@
 import axios from 'axios';
+import { classifyResponsePayload } from '../loadbalancer/error-classifier.js';
+import { UpstreamFailure } from './request-executor.js';
+import { nextReset } from '../loadbalancer/quota-policy.js';
 import { AppDatabase } from '../data/database.js';
 import { logger } from '../utils/logger.js';
 import { getCurrentQuotaPeriod } from '../utils/date.js';
@@ -35,6 +38,9 @@ export class UsageClient {
       },
       timeout: 10000,
     });
+    const failure = classifyResponsePayload(response.data);
+    if (failure) throw new UpstreamFailure(failure);
+    if (!response.data?.key && !response.data?.account) throw new Error('Invalid Tavily usage response');
     return response.data;
   }
 
@@ -52,7 +58,7 @@ export class UsageClient {
 
     logger.info('Usage sync result', {
       keyId,
-      plan: response.account.current_plan,
+      plan: response.account?.current_plan,
       used: usedCount,
       limit: quotaLimit
     });
@@ -65,6 +71,23 @@ export class UsageClient {
       resetAt: null,
     });
 
+    const current = this.db.getApiKeyById(keyId);
+    const keyLimit = finiteNumberOrNull(response.key?.limit), keyUsed = finiteNumberOrNull(response.key?.usage);
+    const planLimit = finiteNumberOrNull(response.account?.plan_limit), planUsed = finiteNumberOrNull(response.account?.plan_usage);
+    const paygoLimit = finiteNumberOrNull(response.account?.paygo_limit), paygoUsed = finiteNumberOrNull(response.account?.paygo_usage);
+    const keyExhausted = keyLimit !== null && keyUsed !== null && keyUsed >= keyLimit;
+    const accountExhausted = planLimit !== null && planUsed !== null && planUsed >= planLimit && paygoLimit !== null && (paygoUsed ?? 0) >= paygoLimit;
+    if (current.status === 'active' && (keyExhausted || accountExhausted)) {
+      this.db.updateApiKeyStatus(keyId,'quota_exceeded');
+      this.db.setQuotaPause(keyId,'TAVILY_USAGE_LIMIT',nextReset('tavily','TAVILY_USAGE_LIMIT'));
+    }
+    // A successful /usage response is not proof that a revoked/disabled key should be restored.
+    // Only a previously quota-paused key with positively confirmed capacity may resume.
+    const keyHasCapacity = keyLimit === null || (keyUsed !== null && keyUsed < keyLimit);
+    const accountHasCapacity = (planLimit !== null && planUsed !== null && planUsed < planLimit) || (paygoLimit !== null && paygoUsed !== null && paygoUsed < paygoLimit);
+    if (current.status === 'quota_exceeded' && keyHasCapacity && accountHasCapacity) {
+      this.db.updateApiKeyStatus(keyId,'active'); this.db.setQuotaPause(keyId,null,null);
+    }
     return response;
   }
 }

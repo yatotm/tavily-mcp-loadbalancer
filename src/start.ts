@@ -11,18 +11,20 @@ async function main() {
   try {
     assertConfig();
     const core = bootstrapCore();
-    const apiRouter = new ApiRouter(core.db, core.keyPool, core.usageSync, core.eventBus, core.connectionStore);
+    const apiRouter = new ApiRouter(core.db, core.keyPool, core.usageSync, core.eventBus, core.connectionStore, core.exaPool, core.decisionSettings, core.reviewer, core.toolRouter, core.exaUsage);
     const httpServer = new HttpServer(core.toolRouter, apiRouter, core.eventBus, core.connectionStore);
-    const scheduler = new SchedulerManager(core.db, core.keyPool, core.usageSync, core.eventBus, core.connectionStore);
+    const scheduler = new SchedulerManager(core.db, core.keyPool, core.usageSync, core.eventBus, core.connectionStore, core.exaPool);
 
     httpServer.start();
     scheduler.start();
+    core.exaUsage.start();
 
     const shutdown = async (signal: string) => {
       logger.info('Shutting down', { signal });
       scheduler.stop();
-      core.logManager.shutdown();
+      core.exaUsage.stop();
       await httpServer.stop();
+      core.logManager.shutdown();
       core.db.close();
       process.exit(0);
     };

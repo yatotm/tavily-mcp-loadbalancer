@@ -2,302 +2,105 @@ import express from 'express';
 import cors from 'cors';
 import http from 'http';
 import path from 'path';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { ToolRouter } from './tools/tool-router.js';
 import { logger } from '../utils/logger.js';
-import { sanitizeForSse } from '../client/response-formatter.js';
 import { ApiRouter } from '../api/router.js';
 import { EventBus } from './event-bus.js';
 import { WebSocketHub } from './websocket-hub.js';
 import { getRuntimeConfig } from '../utils/runtime-config.js';
 import { ConnectionStore } from './connection-store.js';
-
-interface SSEClient {
-  sessionId: string;
-  res: express.Response;
-  lastActivity: number;
-}
-
-interface MCPRequest {
-  jsonrpc: string;
-  id: number | string | null;
-  method: string;
-  params?: any;
-}
+import { Provider } from '../data/database.js';
 
 export class HttpServer {
-  private app: express.Application;
+  public app = express();
   private server?: http.Server;
-  private clients: Map<string, SSEClient> = new Map();
+  private clients = new Map<string, { transport: SSEServerTransport; server: Server; route: string; heartbeat: NodeJS.Timeout }>();
   private websocketHub: WebSocketHub;
-
-  constructor(
-    private toolRouter: ToolRouter,
-    private apiRouter: ApiRouter,
-    private eventBus: EventBus,
-    private connectionStore: ConnectionStore
-  ) {
-    this.app = express();
+  constructor(private toolRouter: ToolRouter, private apiRouter: ApiRouter, private eventBus: EventBus, private connectionStore: ConnectionStore) {
     this.websocketHub = new WebSocketHub(eventBus, connectionStore);
-    this.setupMiddleware();
-    this.setupRoutes();
-    this.setupCleanup();
-  }
-
-  private setupMiddleware(): void {
-    this.app.use(cors({
-      origin: '*',
-      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Admin-Token'],
-    }));
+    this.app.disable('x-powered-by');
+    this.app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Admin-Token', 'MCP-Protocol-Version', 'Mcp-Session-Id', 'Last-Event-ID'],
+      exposedHeaders: ['Mcp-Session-Id'] }));
     this.app.use(express.json({ limit: '2mb' }));
+    this.routes();
+    this.app.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+      if (res.headersSent) return next(error);
+      res.status(error?.type === 'entity.too.large' ? 413 : error instanceof SyntaxError ? 400 : 500)
+        .json({ error: error instanceof SyntaxError ? 'Invalid JSON' : 'Request failed' });
+    });
   }
-
-  private setupRoutes(): void {
+  private createMcp(provider: Provider): Server {
+    const server = new Server({ name: `${provider}-mcp-gateway`, version: '4.1.2' }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: this.toolRouter.listTools(provider) }));
+    server.setRequestHandler(CallToolRequestSchema, async request => {
+      try { return await this.toolRouter.callTool(request.params.name, request.params.arguments, provider); }
+      catch (error) { return { isError: true, content: [{ type: 'text' as const, text: error instanceof Error ? error.message : 'Tool call failed' }] }; }
+    });
+    server.onerror = () => logger.debug('MCP transport error', { provider });
+    return server;
+  }
+  private routes() {
     const runtime = getRuntimeConfig();
-
-    // SSE endpoint
-    this.app.get('/sse', (req, res) => {
-      const sessionId = this.generateSessionId();
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Cache-Control',
-      });
-
-      res.write('event: endpoint\n');
-      res.write(`data: /message?sessionId=${sessionId}\n\n`);
-
-      const client: SSEClient = {
-        sessionId,
-        res,
-        lastActivity: Date.now(),
-      };
-
-      this.clients.set(sessionId, client);
-      this.connectionStore.setSse(this.clients.size);
-      logger.info('SSE client connected', { sessionId });
-
-      req.on('close', () => {
-        this.clients.delete(sessionId);
+    for (const [prefix, provider] of [['', 'tavily'], ['/tavily', 'tavily'], ['/exa', 'exa']] as const) {
+      this.app.get(`${prefix}/sse`, async (req, res) => {
+        if (this.clients.size >= 1000) { res.status(503).json({ error: 'Too many SSE sessions' }); return; }
+        const server = this.createMcp(provider);
+        const transport = new SSEServerTransport(`${prefix}/message`, res);
+        res.setHeader('X-Accel-Buffering', 'no');
+        const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': heartbeat\n\n'); }, 25000);
+        heartbeat.unref();
+        const cleanup = () => {
+          clearInterval(heartbeat); this.clients.delete(transport.sessionId);
+          this.connectionStore.setSse(this.clients.size);
+        };
+        this.clients.set(transport.sessionId, { transport, server, route: prefix, heartbeat });
         this.connectionStore.setSse(this.clients.size);
-        logger.info('SSE client disconnected', { sessionId });
+        res.on('close', () => { cleanup(); void server.close(); });
+        try { await server.connect(transport); } catch { cleanup(); res.end(); }
       });
-
-      req.on('error', (error) => {
-        const msg = (error as Error).message;
-        if (msg === 'aborted') {
-          logger.debug('SSE client aborted', { sessionId });
-        } else {
-          logger.error('SSE client error', { sessionId, error: msg });
-        }
-        this.clients.delete(sessionId);
-        this.connectionStore.setSse(this.clients.size);
+      this.app.post(`${prefix}/message`, async (req, res) => {
+        const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : '';
+        const client = this.clients.get(sessionId);
+        // Reject stale and cross-channel sessions BEFORE dispatching a billable call.
+        if (!client || client.route !== prefix) { res.status(404).json({ error: 'Unknown SSE session for this endpoint' }); return; }
+        await client.transport.handlePostMessage(req, res, req.body);
       });
-    });
-
-    this.app.post('/message', async (req, res) => {
-      try {
-        const sessionId = req.query.sessionId as string;
-        const mcpRequest: MCPRequest = req.body;
-        if (!sessionId) {
-          return res.status(400).json({ error: 'Missing sessionId parameter' });
-        }
-
-        const response = await this.handleMcpRequest(mcpRequest);
-        if (response && this.clients.has(sessionId)) {
-          const client = this.clients.get(sessionId)!;
-          const payload = sanitizeForSse(JSON.stringify(response));
-          if (!client.res.destroyed && client.res.writable) {
-            client.res.write(`data: ${payload}\n\n`);
-          }
-          client.lastActivity = Date.now();
-        }
-
-        res.json({ status: 'sent' });
-      } catch (error: any) {
-        logger.error('Error handling SSE message', { error: error?.message });
-        res.status(500).json({ error: 'Internal server error' });
-      }
-    });
-
-    this.app.post('/mcp', async (req, res) => {
-      try {
-        const mcpRequest: MCPRequest = req.body;
-        if (!mcpRequest || !mcpRequest.jsonrpc || !mcpRequest.method) {
-          return res.status(400).json({
-            error: 'Invalid MCP request format. Expected JSON-RPC 2.0 format with method field.',
-          });
-        }
-
-        const response = await this.handleMcpRequest(mcpRequest);
-        if (response) {
-          res.json(response);
-        } else {
-          res.json({
-            jsonrpc: '2.0',
-            id: mcpRequest.id ?? null,
-            result: { status: 'acknowledged' },
-          });
-        }
-      } catch (error: any) {
-        logger.error('Error handling streamableHTTP MCP request', { error: error?.message });
-        res.status(500).json({
-          jsonrpc: '2.0',
-          id: req.body?.id || null,
-          error: {
-            code: -32603,
-            message: 'Internal error',
-            data: error?.message || 'Unknown error',
-          },
-        });
-      }
-    });
-
-    this.app.get('/health', (req, res) => {
-      res.json({
-        status: 'ok',
-        sse_clients: this.clients.size,
-        ws_clients: this.websocketHub.getConnectionCount(),
-        uptime: process.uptime(),
+      this.app.post(`${prefix}/mcp`, async (req, res) => {
+        const server = this.createMcp(provider);
+        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+        try {
+          await server.connect(transport);
+          await transport.handleRequest(req, res, req.body);
+        } finally { await server.close(); }
       });
-    });
-
+      this.app.all(`${prefix}/mcp`, (req, res) => { res.setHeader('Allow', 'POST'); res.status(405).json({ error: 'This stateless MCP endpoint accepts POST requests' }); });
+    }
+    this.app.get('/health', (req, res) => res.json({ status: 'ok', version: '4.1.2', sse_clients: this.clients.size, ws_clients: this.websocketHub.getConnectionCount(), uptime: process.uptime() }));
     this.app.use('/api', this.apiRouter.router);
-
+    this.app.use('/api', (req, res) => res.status(404).json({ error: 'API route not found' }));
     if (runtime.enableWebUI) {
       const root = path.resolve(process.cwd(), 'web', 'public');
       this.app.use(express.static(root));
-      // Express 5 requires named wildcard parameter instead of bare '*'
-      this.app.get('/{*splat}', (req, res) => {
-        res.sendFile(path.join(root, 'index.html'));
-      });
+      this.app.get('/', (req, res) => res.sendFile(path.join(root, 'index.html')));
     }
+    this.app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
   }
-
-  private cleanupTimer?: ReturnType<typeof setInterval>;
-
-  private setupCleanup(): void {
-    this.cleanupTimer = setInterval(() => {
-      const now = Date.now();
-      const timeout = 5 * 60 * 1000;
-      for (const [sessionId, client] of this.clients.entries()) {
-        if (now - client.lastActivity > timeout) {
-          try {
-            client.res.end();
-          } catch {
-            // ignore
-          }
-          this.clients.delete(sessionId);
-          this.connectionStore.setSse(this.clients.size);
-        }
-      }
-    }, 60000);
-  }
-
-  private async handleMcpRequest(request: MCPRequest): Promise<any | null> {
-    switch (request.method) {
-      case 'initialize':
-        return {
-          jsonrpc: '2.0',
-          id: request.id,
-          result: {
-            protocolVersion: '2024-11-05',
-            capabilities: { tools: {} },
-            serverInfo: {
-              name: 'tavily-mcp-loadbalancer',
-              version: '3.1.1',
-              capabilities: { tools: {} },
-            },
-          },
-        };
-      case 'notifications/initialized':
-        return null;
-      case 'tools/list':
-        return {
-          jsonrpc: '2.0',
-          id: request.id,
-          result: {
-            tools: this.toolRouter.listTools(),
-          },
-        };
-      case 'tools/call': {
-        const { name, arguments: args } = request.params || {};
-        try {
-          const result = await this.toolRouter.callTool(name, args);
-          return {
-            jsonrpc: '2.0',
-            id: request.id,
-            result,
-          };
-        } catch (error: any) {
-          return {
-            jsonrpc: '2.0',
-            id: request.id,
-            error: {
-              code: -32603,
-              message: error?.message || 'Tool call failed',
-            },
-          };
-        }
-      }
-      default:
-        return {
-          jsonrpc: '2.0',
-          id: request.id,
-          error: {
-            code: -32601,
-            message: `Method not found: ${request.method}`,
-          },
-        };
-    }
-  }
-
-  private generateSessionId(): string {
-    return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-  }
-
-  start(): void {
+  start() {
     const runtime = getRuntimeConfig();
     this.server = http.createServer(this.app);
     this.websocketHub.attach(this.server, runtime.adminPassword || undefined);
-    this.server.listen(runtime.port, runtime.host, () => {
-      logger.info('HTTP server listening', { host: runtime.host, port: runtime.port });
-    });
+    this.server.listen(runtime.port, runtime.host, () => logger.info('HTTP server listening', { host: runtime.host, port: runtime.port }));
   }
-
-  async stop(): Promise<void> {
-    // Clear cleanup timer
-    if (this.cleanupTimer) {
-      clearInterval(this.cleanupTimer);
-    }
-
-    // Close all SSE connections
-    for (const [sessionId, client] of this.clients.entries()) {
-      try {
-        client.res.end();
-      } catch {
-        // ignore
-      }
-      this.clients.delete(sessionId);
-    }
-
-    // Close WebSocket connections
-    this.websocketHub.closeAll();
-
-    // Close HTTP server
-    if (!this.server) return;
-    await new Promise<void>((resolve) => {
-      this.server?.close(() => resolve());
-    });
+  async stop() {
+    for (const client of this.clients.values()) { clearInterval(client.heartbeat); await client.server.close(); }
+    this.clients.clear(); this.connectionStore.setSse(0); this.websocketHub.closeAll();
+    if (this.server) await new Promise<void>(resolve => this.server!.close(() => resolve()));
   }
-
-  getSseConnections(): number {
-    return this.clients.size;
-  }
-
-  getWsConnections(): number {
-    return this.websocketHub.getConnectionCount();
-  }
+  getSseConnections() { return this.clients.size; }
+  getWsConnections() { return this.websocketHub.getConnectionCount(); }
 }

@@ -28,6 +28,10 @@ export interface QuotaStats {
   limit: number | null
   remaining: number | null
   unknown_keys?: number
+  known_limit?: number
+  known_remaining?: number
+  available?: number
+  period?: string
 }
 
 export interface StatsOverview {
@@ -49,6 +53,8 @@ export interface TimelineData {
 }
 
 export interface KeyStatsSummary {
+  provider?: string
+  billing?: { total_usd: number; reported_usd: number; estimated_usd: number; unsettled: number } | null
   id: number
   key_preview: string
   display_name: string

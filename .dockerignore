@@ -69,3 +69,9 @@ docker-compose*
 # 其他
 *.tgz
 *.tar.gz
+
+# Host-only frontend dependencies and build output must not enter Docker context.
+web/node_modules/
+web/public/
+web/coverage/
+tests/

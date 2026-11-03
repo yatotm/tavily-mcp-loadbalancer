@@ -5,6 +5,7 @@
     width="360px"
     :close-on-click-modal="false"
     :close-on-press-escape="false"
+    :show-close="false"
     align-center
   >
     <el-form @submit.prevent="handleLogin">
@@ -20,7 +21,7 @@
     </el-form>
 
     <template #footer>
-      <el-button @click="handleCancel" :disabled="loading">取消</el-button>
+
       <el-button type="primary" :disabled="!password.trim() || loading" :loading="loading" @click="handleLogin">
         登录
       </el-button>
@@ -62,6 +63,7 @@ watch(
 const loading = ref(false)
 
 const handleLogin = async () => {
+  if (loading.value) return
   if (!password.value.trim()) {
     error.value = '请输入密码'
     return

@@ -1,12 +1,12 @@
-import { AppDatabase } from '../data/database.js';
+import { AppDatabase, Provider } from '../data/database.js';
 import { ConnectionStore } from './connection-store.js';
 import { getCurrentQuotaPeriod, daysAgoIso } from '../utils/date.js';
 
 export class StatsService {
   constructor(private db: AppDatabase, private connectionStore: ConnectionStore) {}
 
-  getOverview() {
-    const keys = this.db.getApiKeys();
+  getOverview(provider?: Provider) {
+    const keys = this.db.getApiKeys(provider);
     const totalKeys = keys.length;
     const activeKeys = keys.filter((key) => key.status === 'active').length;
     const disabledKeys = keys.filter((key) => key.status === 'disabled').length;
@@ -14,21 +14,26 @@ export class StatsService {
     const bannedKeys = keys.filter((key) => key.status === 'banned').length;
 
     const yearMonth = getCurrentQuotaPeriod();
-    const quotas = this.db.getMonthlyQuotas(yearMonth);
+    const quotaKeysSet = new Set((provider === 'exa' ? [] : this.db.getApiKeys('tavily')).map(k => k.id));
+    const quotas = this.db.getMonthlyQuotas(yearMonth).filter(q => quotaKeysSet.has(q.key_id));
     const totalUsed = quotas.reduce((sum, q) => sum + q.used_count, 0);
     const totalLimit = quotas.reduce((sum, q) => sum + (q.quota_limit || 0), 0);
-    const unknownLimitKeys = quotas.filter((q) => q.quota_limit === null).length;
+    const knownRemaining = quotas.reduce((sum,q)=>sum+(q.quota_limit === null ? 0 : Math.max(0,q.quota_limit-q.used_count)),0);
+    const availableIds = new Set(keys.filter(k=>k.provider==='tavily' && k.status==='active').map(k=>k.id));
+    const available = quotas.reduce((sum,q)=>sum+(availableIds.has(q.key_id) && q.quota_limit !== null ? Math.max(0,q.quota_limit-q.used_count) : 0),0);
+    const unknownLimitKeys = quotas.filter((q) => q.quota_limit === null).length + Math.max(0, quotaKeysSet.size - quotas.length);
 
-    const totalRequests = this.db.queryRequestLogs({ page: 1, limit: 1 }).total;
-    const successCount = this.db.queryRequestLogs({ page: 1, limit: 1, status: 'success' }).total;
+    const totalRequests = this.db.queryRequestLogs({ provider, excludeMaintenance: true, includePayload: false, page: 1, limit: 1 }).total;
+    const successCount = this.db.queryRequestLogs({ provider, excludeMaintenance: true, includePayload: false, page: 1, limit: 1, status: 'success' }).total;
     const errorCount = totalRequests - successCount;
 
-    const lastLogs = this.db.queryRequestLogs({ page: 1, limit: 50 }).logs;
+    const lastLogs = this.db.queryRequestLogs({ provider, excludeMaintenance: true, includePayload: false, page: 1, limit: 50 }).logs;
     const avgResponse = lastLogs.reduce((sum, log) => sum + (log.response_time_ms || 0), 0) / Math.max(1, lastLogs.length);
 
     const connectionSnapshot = this.connectionStore.getSnapshot();
 
     return {
+      exa_cost: provider === 'tavily' ? undefined : this.db.exaBilling.summary(),
       system: {
         uptime: process.uptime(),
         sse_connections: connectionSnapshot.sse,
@@ -51,15 +56,16 @@ export class StatsService {
       quota: {
         used: totalUsed,
         limit: unknownLimitKeys === 0 && totalLimit > 0 ? totalLimit : null,
-        remaining: unknownLimitKeys === 0 && totalLimit > 0 ? Math.max(0, totalLimit - totalUsed) : null,
-        unknown_keys: unknownLimitKeys,
+        remaining: unknownLimitKeys === 0 && totalLimit > 0 ? knownRemaining : null,
+        unknown_keys: unknownLimitKeys, known_limit: totalLimit, known_remaining: knownRemaining, available, period: yearMonth,
       },
     };
   }
 
   getToolUsage() {
     const yearMonth = getCurrentQuotaPeriod();
-    const quotas = this.db.getMonthlyQuotas(yearMonth);
+    const quotaKeysSet = new Set(this.db.getApiKeys('tavily').map(k => k.id));
+    const quotas = this.db.getMonthlyQuotas(yearMonth).filter(q => quotaKeysSet.has(q.key_id));
     return quotas.reduce(
       (acc, quota) => {
         acc.search += quota.search_count;

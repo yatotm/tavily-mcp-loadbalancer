@@ -7,6 +7,9 @@ import { ElMessageBox } from 'element-plus'
 import { Search, Delete } from '@element-plus/icons-vue'
 
 interface ApiLogEntry {
+  cost_usd?: number | null
+  cost_source?: string | null
+  provider: string
   id: number
   created_at: string
   tool_name: string
@@ -17,6 +20,9 @@ interface ApiLogEntry {
 }
 
 interface LogDetail {
+  cost_usd?: number | null
+  cost_source?: string | null
+  provider: string
   id: number
   key_id: number | null
   tool_name: string
@@ -42,43 +48,52 @@ const logDetail = ref<LogDetail | null>(null)
 
 const filters = reactive({
   keyword: '',
+  provider: 'all',
+  tool: 'all',
   status: 'all' as 'all' | 'success' | 'error',
   page: 1,
   pageSize: 20
 })
 
+let requestSequence = 0
 const fetchLogs = async () => {
+  const sequence = ++requestSequence
   loading.value = true
   try {
     const queryParams = new URLSearchParams()
     queryParams.append('page', filters.page.toString())
     queryParams.append('limit', filters.pageSize.toString())
 
+    if (filters.provider !== 'all') queryParams.append('provider', filters.provider)
+    if (filters.tool !== 'all') queryParams.append('tool_name', filters.tool)
     if (filters.keyword) queryParams.append('keyword', filters.keyword)
     if (filters.status !== 'all') queryParams.append('status', filters.status)
 
     const data = await api.get<{ logs: ApiLogEntry[], total: number }>(`/api/logs?${queryParams.toString()}`)
+    if (sequence !== requestSequence) return
     logs.value = (data.logs || []).map((log) => ({
-      id: log.id,
+      id: log.id, cost_usd: log.cost_usd, cost_source: log.cost_source,
       timestamp: log.created_at,
-      tool: log.tool_name,
+      tool: `${log.provider || 'tavily'} / ${log.tool_name}`,
       key_id: log.key_id ?? undefined,
       status: log.response_status,
       duration_ms: log.response_time_ms ?? null,
       error_message: log.error_message ?? undefined,
     }))
     total.value = data.total || 0
+    const lastPage = Math.max(1,Math.ceil(total.value/filters.pageSize))
+    if(filters.page>lastPage)filters.page=lastPage
   } catch (err) {
     error(err instanceof Error ? err.message : 'Failed to fetch logs')
     console.error(err)
   } finally {
-    loading.value = false
+    if (sequence === requestSequence) loading.value = false
   }
 }
 
 const handleFilter = () => {
-  filters.page = 1
-  fetchLogs()
+  if(filters.page!==1)filters.page=1
+  else fetchLogs()
 }
 
 const handleClearLogs = async () => {
@@ -94,7 +109,7 @@ const handleClearLogs = async () => {
     )
 
     await api.delete('/api/logs?days=30')
-    success('Old logs cleared')
+    success('旧日志已清理')
     fetchLogs()
   } catch (err) {
     if (err !== 'cancel') {
@@ -133,7 +148,8 @@ const formatJson = (jsonStr: string | null): string => {
   }
 }
 
-watch(() => [filters.page, filters.pageSize], () => {
+watch(() => [filters.page, filters.pageSize], (next,old) => {
+  if(next[1]!==old[1] && filters.page!==1){filters.page=1;return}
   fetchLogs()
 })
 
@@ -144,12 +160,11 @@ onMounted(() => {
 
 <template>
   <div class="logs-view">
-    <div class="view-header">
-      <h2 class="view-title">请求日志</h2>
-    </div>
 
     <div class="filters-bar">
       <div class="left-filters">
+        <el-select v-model="filters.provider" style="width:130px" @change="handleFilter"><el-option label="全部渠道" value="all" /><el-option label="Tavily" value="tavily" /><el-option label="Exa" value="exa" /></el-select>
+        <el-select v-model="filters.tool" style="width:150px" @change="handleFilter"><el-option label="全部事件" value="all" /><el-option label="内容审查" value="moderation" /><el-option label="配额同步" value="sync_quota" /></el-select>
         <el-input
           v-model="filters.keyword"
           placeholder="搜索日志..."
@@ -198,6 +213,7 @@ onMounted(() => {
       <div v-loading="detailLoading">
         <template v-if="logDetail">
           <el-descriptions :column="2" border>
+            <el-descriptions-item label="渠道">{{ logDetail.provider }}</el-descriptions-item>
             <el-descriptions-item label="ID">{{ logDetail.id }}</el-descriptions-item>
             <el-descriptions-item label="Key ID">{{ logDetail.key_id || '-' }}</el-descriptions-item>
             <el-descriptions-item label="工具">
@@ -212,6 +228,7 @@ onMounted(() => {
             <el-descriptions-item label="耗时">
               {{ logDetail.response_time_ms !== null ? `${logDetail.response_time_ms}ms` : '-' }}
             </el-descriptions-item>
+            <el-descriptions-item v-if="logDetail.cost_source" label="费用 / USD">{{logDetail.cost_usd == null ? '待确认' : '$'+logDetail.cost_usd.toFixed(6)}} · {{logDetail.cost_source==='reported'?'上游返回':logDetail.cost_source==='estimated'?'按价格估算':'未结算'}}</el-descriptions-item>
             <el-descriptions-item v-if="logDetail.error_type" label="错误类型" :span="2">
               <span class="error-text">{{ logDetail.error_type }}</span>
             </el-descriptions-item>
@@ -225,6 +242,7 @@ onMounted(() => {
             <pre class="json-block">{{ formatJson(logDetail.request_params) }}</pre>
           </div>
 
+          <p v-if="!logDetail.response_data" class="field-help">此请求未保存响应正文。可在设置中开启限长正文记录。</p>
           <div class="params-section" v-if="logDetail.response_data">
             <h4>响应数据</h4>
             <pre class="json-block response-block">{{ formatJson(logDetail.response_data) }}</pre>

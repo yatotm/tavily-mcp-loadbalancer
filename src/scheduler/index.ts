@@ -19,9 +19,10 @@ export class SchedulerManager {
     keyPool: KeyPool,
     usageSync: UsageSyncScheduler,
     eventBus: EventBus,
-    connectionStore: ConnectionStore
+    connectionStore: ConnectionStore,
+    exaPool?: KeyPool
   ) {
-    this.quotaRefresher = new QuotaRefresher(db, keyPool);
+    this.quotaRefresher = new QuotaRefresher(db, keyPool, exaPool);
     this.usageSync = usageSync;
     this.logCleanup = new LogCleanupScheduler(db);
     this.statsBroadcast = new StatsBroadcastScheduler(new StatsService(db, connectionStore), eventBus);

@@ -65,7 +65,7 @@ describe('error-classifier', () => {
     );
     expect(result.type).toBe('quota_exceeded');
     expect(result.shouldDisableKey).toBe(true);
-    expect(result.incrementErrorCount).toBe(true);
+    expect(result.incrementErrorCount).toBe(false);
   });
 
   it('classifies 433 with quota body as quota_exceeded', () => {
@@ -87,12 +87,13 @@ describe('error-classifier', () => {
     expect(result.type).toBe('auth');
   });
 
-  it('keeps 432 as auth when body has no quota keywords', () => {
+  it('uses the official 432 quota status even without quota keywords', () => {
     const result = classifyError(
       new AxiosError('Request failed'),
       { detail: { error: 'Invalid signature' } },
       432
     );
-    expect(result.type).toBe('auth');
+    expect(result.type).toBe('quota_exceeded');
+    expect(result.code).toBe('TAVILY_PLAN_LIMIT');
   });
 });

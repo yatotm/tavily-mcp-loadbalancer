@@ -1,18 +1,19 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue';
 import MainLayout from './layouts/MainLayout.vue';
 import SideNav from './components/SideNav.vue';
 import HeaderBar from './components/HeaderBar.vue';
-import DashboardView from './views/DashboardView.vue';
-import KeysView from './views/KeysView.vue';
-import StatsView from './views/StatsView.vue';
-import LogsView from './views/LogsView.vue';
-import SettingsView from './views/SettingsView.vue';
+const DashboardView = defineAsyncComponent(() => import('./views/DashboardView.vue'));
+const KeysView = defineAsyncComponent(() => import('./views/KeysView.vue'));
+const StatsView = defineAsyncComponent(() => import('./views/StatsView.vue'));
+const LogsView = defineAsyncComponent(() => import('./views/LogsView.vue'));
+const SettingsView = defineAsyncComponent(() => import('./views/SettingsView.vue'));
 import ToastContainer from './components/ToastContainer.vue';
 import LoginModal from './components/LoginModal.vue';
 import { useAuthStore } from './stores/auth';
 import { useApi } from './composables/useApi';
 import { useToast } from './composables/useToast';
+import { useWebSocket } from './composables/useWebSocket';
 import { ElMessageBox } from 'element-plus';
 import type { UsageSyncEnqueueResult, UsageSyncQueueStatus } from './stores/keys';
 
@@ -53,7 +54,9 @@ onUnmounted(() => {
   window.removeEventListener('hashchange', handleHashChange);
 });
 const isSidebarCollapsed = ref(false);
-const connectionStatus = ref<'connected' | 'disconnected' | 'connecting'>('connected');
+const websocket = useWebSocket();
+const connectionStatus = computed(() => websocket.isConnected.value ? 'connected' as const : 'disconnected' as const);
+const startupError = ref('');
 const showLoginModal = ref(false);
 const initialLoading = ref(true);
 
@@ -61,6 +64,7 @@ const initialLoading = ref(true);
 const checkAuthRequired = async () => {
   try {
     const res = await fetch('/api/health');
+    if (!res.ok) throw new Error('健康检查失败');
     const data = await res.json();
     if (data.authRequired) {
       authStore.setAuthRequired(true);
@@ -68,8 +72,9 @@ const checkAuthRequired = async () => {
         showLoginModal.value = true;
       }
     }
+    if (!authStore.authRequired) { websocket.connect(); fetchSyncStatus(); }
   } catch {
-    // Health check failed, proceed without auth requirement
+    startupError.value = '无法连接网关，请检查服务后重试。';
   } finally {
     initialLoading.value = false;
   }
@@ -90,14 +95,14 @@ const handleLoggedIn = () => {
 
 // View Titles
 const viewTitles: Record<string, string> = {
-  dashboard: '仪表盘',
-  keys: 'API Key 管理',
+  dashboard: '运行总览',
+  keys: '密钥池',
   stats: '使用统计',
   logs: '请求日志',
   settings: '系统设置'
 };
 
-const currentTitle = computed(() => viewTitles[currentView.value] || 'Tavily Load Balancer');
+const currentTitle = computed(() => viewTitles[currentView.value] || 'Search Gateway');
 
 // Actions
 const handleToggleSidebar = () => {
@@ -109,6 +114,7 @@ const syncStatus = ref<UsageSyncQueueStatus | null>(null);
 let syncStatusTimer: ReturnType<typeof setInterval> | null = null;
 
 const fetchSyncStatus = async () => {
+  if (authStore.authRequired || initialLoading.value || startupError.value) return;
   try {
     syncStatus.value = await api.get<UsageSyncQueueStatus>('/api/settings/sync/status');
   } catch {
@@ -150,7 +156,7 @@ const checkResponsive = () => {
   const width = window.innerWidth;
   if (width > 768 && width < 1024) {
     isSidebarCollapsed.value = true;
-  } else if (width >= 1024) {
+  } else {
     isSidebarCollapsed.value = false;
   }
 };
@@ -158,12 +164,12 @@ const checkResponsive = () => {
 onMounted(() => {
   checkAuthRequired();
   checkResponsive();
-  fetchSyncStatus();
   syncStatusTimer = setInterval(fetchSyncStatus, 10000);
   window.addEventListener('resize', checkResponsive);
 });
 
 onUnmounted(() => {
+  websocket.disconnect();
   if (syncStatusTimer) clearInterval(syncStatusTimer);
   window.removeEventListener('resize', checkResponsive);
 });
@@ -177,7 +183,8 @@ onUnmounted(() => {
     </div>
 
     <!-- Main app -->
-    <template v-else>
+    <div v-else-if="startupError" class="startup-error"><h2>暂时无法连接</h2><p>{{ startupError }}</p><el-button @click="startupError = ''; checkAuthRequired()">重试</el-button></div>
+    <template v-else-if="!authStore.authRequired">
       <MainLayout>
         <template #sidebar>
           <SideNav
@@ -196,6 +203,8 @@ onUnmounted(() => {
             @toggle-sidebar="handleToggleSidebar"
             @sync-stale="handleSync('stale')"
             @sync-all="handleSync('all')"
+            @logout="authStore.logout(); websocket.disconnect(); showLoginModal = true"
+            :can-logout="!!authStore.token"
           />
         </template>
 

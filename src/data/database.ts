@@ -1,14 +1,20 @@
 import fs from 'fs';
+import { ExaBillingStore } from './exa-billing-store.js';
 import path from 'path';
 import Database from 'better-sqlite3';
 import { config } from '../utils/config.js';
-import { decryptSecret, encryptSecret, hashKey } from '../utils/crypto.js';
+import { decryptSecret, encryptSecret, hashKey, maskKey } from '../utils/crypto.js';
 import { logger } from '../utils/logger.js';
 import { getCurrentQuotaPeriod, toIsoString } from '../utils/date.js';
+
+export type Provider = 'tavily' | 'exa';
 
 export type KeyStatus = 'active' | 'disabled' | 'quota_exceeded' | 'banned';
 
 export interface ApiKeyRecord {
+  provider: Provider;
+  quota_reason: string | null;
+  quota_reset_at: string | null;
   id: number;
   key_hash: string;
   key_value: string;
@@ -58,6 +64,9 @@ export interface UsageSyncStateRecord {
 }
 
 export interface RequestLogRecord {
+  cost_usd?: number | null;
+  cost_source?: string | null;
+  provider?: Provider;
   id: number;
   key_id: number | null;
   tool_name: string;
@@ -73,6 +82,7 @@ export interface RequestLogRecord {
 export class AppDatabase {
   private db: Database.Database;
   private encryptionKey: string;
+  readonly exaBilling: ExaBillingStore;
 
   constructor(dbPath: string = config.databasePath, encryptionKey: string = config.databaseEncryptionKey) {
     this.encryptionKey = encryptionKey;
@@ -83,7 +93,9 @@ export class AppDatabase {
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
+    this.db.pragma('busy_timeout = 5000');
     this.migrate();
+    this.exaBilling = new ExaBillingStore(this.db, this.encryptionKey);
   }
 
   private migrate(): void {
@@ -169,6 +181,32 @@ export class AppDatabase {
       logger.info('Migration: added response_data column to request_logs');
     }
 
+    for (const table of ['api_keys', 'request_logs']) {
+      const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      if (!columns.some((col) => col.name === 'provider')) {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN provider TEXT NOT NULL DEFAULT 'tavily'`);
+      }
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_logs_provider_status_time ON request_logs(provider, response_status, created_at);
+      CREATE TABLE IF NOT EXISTS upstream_tasks (
+        provider TEXT NOT NULL, task_id TEXT NOT NULL, key_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL, PRIMARY KEY(provider, task_id)
+      );
+    `);
+
+    for (const [table, column, type] of [['api_keys','key_preview','TEXT'],['api_keys','quota_reason','TEXT'],['api_keys','quota_reset_at','TEXT'],['request_logs','cost_usd','REAL'],['request_logs','cost_source','TEXT']]) {
+      const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      if (!cols.some(c => c.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
+
+    for (const row of this.db.prepare('SELECT id,key_value FROM api_keys WHERE key_preview IS NULL').all() as any[]) {
+      let preview = '(unavailable)';
+      try { preview = maskKey(this.decryptKey(row.key_value)); } catch { /* Keep invalid ciphertext out of output. */ }
+      this.db.prepare('UPDATE api_keys SET key_preview=? WHERE id=?').run(preview,row.id);
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_keys_provider_status ON api_keys(provider,status,id)');
+
     // Backfill known successful remote quota synchronizations for existing databases.
     this.db.exec(`
       INSERT OR IGNORE INTO usage_sync_state (
@@ -197,54 +235,56 @@ export class AppDatabase {
 
   addApiKey(params: {
     keyValue: string;
+    provider?: Provider;
     displayName?: string | null;
     weight?: number;
     maxErrors?: number;
   }): ApiKeyRecord {
+    if (typeof params.keyValue !== 'string' || !params.keyValue.trim() || params.keyValue.length > 4096) throw new Error('Invalid API key');
+    this.validateKeyOptions(params);
+    if (params.displayName != null && (typeof params.displayName !== 'string' || params.displayName.length > 200)) throw new Error('Key name must be at most 200 characters');
+    params.keyValue = params.keyValue.trim();
     const keyHash = hashKey(params.keyValue);
     const encrypted = this.encryptKey(params.keyValue);
     const now = toIsoString();
     const statement = this.db.prepare(`
       INSERT INTO api_keys (
-        key_value, key_hash, display_name, status, weight, error_count, max_errors,
+        key_value, key_hash, provider, display_name, status, weight, error_count, max_errors,
         total_requests, successful_requests, failed_requests, created_at, updated_at
-      ) VALUES (?, ?, ?, 'active', ?, 0, ?, 0, 0, 0, ?, ?)
+      ) VALUES (?, ?, ?, ?, 'active', ?, 0, ?, 0, 0, 0, ?, ?)
     `);
     const result = statement.run(
       encrypted,
       keyHash,
+      params.provider ?? 'tavily',
       params.displayName ?? null,
       params.weight ?? 1,
       params.maxErrors ?? config.maxKeyErrors,
       now,
       now
     );
+    this.db.prepare('UPDATE api_keys SET key_preview=? WHERE id=?').run(maskKey(params.keyValue),result.lastInsertRowid);
     return this.getApiKeyById(Number(result.lastInsertRowid));
   }
 
-  importApiKeys(keys: Array<{ keyValue: string; displayName?: string | null }>): number {
-    const insert = this.db.prepare(`
-      INSERT INTO api_keys (
-        key_value, key_hash, display_name, status, weight, error_count, max_errors,
-        total_requests, successful_requests, failed_requests, created_at, updated_at
-      ) VALUES (?, ?, ?, 'active', 1, 0, ?, 0, 0, 0, ?, ?)
-    `);
-    const now = toIsoString();
-    const transaction = this.db.transaction((items: typeof keys) => {
+  importApiKeys(keys: Array<{ keyValue: string; displayName?: string | null; provider?: Provider }>): number {
+    return this.db.transaction(() => {
       let inserted = 0;
-      for (const item of items) {
-        const encrypted = this.encryptKey(item.keyValue);
-        const hash = hashKey(item.keyValue);
-        try {
-          insert.run(encrypted, hash, item.displayName ?? null, config.maxKeyErrors, now, now);
-          inserted += 1;
-        } catch (error) {
-          // ignore duplicates
-        }
+      for (const item of keys) {
+        if (typeof item.keyValue !== 'string' || !item.keyValue.trim()) throw new Error('Invalid API key');
+        if (this.getApiKeyByHash(hashKey(item.keyValue.trim()))) continue;
+        this.addApiKey(item);
+        inserted++;
       }
       return inserted;
-    });
-    return transaction(keys);
+    })();
+  }
+
+  private validateKeyOptions(params: { weight?: number; maxErrors?: number; provider?: Provider }): void {
+    if (params.provider !== undefined && !['tavily', 'exa'].includes(params.provider)) throw new Error('Unknown provider');
+    for (const [name, value, max] of [['weight', params.weight, 100], ['maxErrors', params.maxErrors, 100]] as const) {
+      if (value !== undefined && (!Number.isInteger(value) || value < 1 || value > max)) throw new Error(`${name} must be an integer between 1 and ${max}`);
+    }
   }
 
   getApiKeyById(id: number): ApiKeyRecord {
@@ -260,16 +300,32 @@ export class AppDatabase {
     return row ? this.mapApiKey(row) : null;
   }
 
-  getApiKeys(): ApiKeyRecord[] {
-    const rows = this.db.prepare('SELECT * FROM api_keys ORDER BY id ASC').all();
+  getApiKeys(provider?: Provider): ApiKeyRecord[] {
+    const rows = provider ? this.db.prepare('SELECT * FROM api_keys WHERE provider = ? ORDER BY id ASC').all(provider) : this.db.prepare('SELECT * FROM api_keys ORDER BY id ASC').all();
     return rows.map((row) => this.mapApiKey(row));
+  }
+
+  queryApiKeys(params: { provider?: Provider; status?: string; keyword?: string; page: number; limit: number }) {
+    const clauses: string[] = [], values: Array<string | number> = [];
+    if (params.provider) { clauses.push('provider=?'); values.push(params.provider); }
+    if (params.status) { clauses.push('status=?'); values.push(params.status); }
+    if (params.keyword) {
+      clauses.push("(display_name LIKE ? ESCAPE '\\' OR key_preview LIKE ? ESCAPE '\\' OR CAST(id AS TEXT)=?)");
+      const term = '%' + params.keyword.replace(/[\\%_]/g, '\\$&') + '%'; values.push(term,term,params.keyword);
+    }
+    const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
+    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM api_keys ${where}`).get(...values) as any).n as number;
+    const limit = Math.max(1, Math.min(100, Math.floor(params.limit) || 20));
+    const page = Math.min(Math.max(1, Math.floor(params.page) || 1), Math.max(1, Math.ceil(total / limit)));
+    const keys = this.db.prepare(`SELECT * FROM api_keys ${where} ORDER BY id ASC LIMIT ? OFFSET ?`).all(...values,limit,(page-1)*limit).map(row=>this.mapApiKey(row));
+    return { total, page, limit, keys };
   }
 
   getApiKeysForDisplay(): ApiKeyDisplay[] {
     const rows = this.db.prepare('SELECT * FROM api_keys ORDER BY id ASC').all();
     return rows.map((row) => {
       const record = this.mapApiKey(row);
-      const preview = record.key_value;
+      const preview = maskKey(record.key_value);
       return {
         ...record,
         key_preview: preview,
@@ -285,6 +341,8 @@ export class AppDatabase {
 
   updateApiKey(id: number, updates: { displayName?: string | null; weight?: number; maxErrors?: number }): ApiKeyRecord {
     const now = toIsoString();
+    this.validateKeyOptions(updates);
+    if (updates.displayName != null && (typeof updates.displayName !== 'string' || updates.displayName.length > 200)) throw new Error('Key name must be at most 200 characters');
     const current = this.getApiKeyById(id);
     const statement = this.db.prepare(`
       UPDATE api_keys
@@ -306,19 +364,46 @@ export class AppDatabase {
     this.db.prepare('UPDATE api_keys SET status = ?, updated_at = ? WHERE id = ?').run(status, now, id);
   }
 
+  setQuotaPause(id: number, reason: string | null, resetAt: string | null): void {
+    this.db.prepare('UPDATE api_keys SET quota_reason=?, quota_reset_at=? WHERE id=?').run(reason, resetAt, id);
+  }
+
   deleteApiKey(id: number): void {
-    const deleteTransaction = this.db.transaction((keyId: number) => {
-      this.db.prepare('DELETE FROM usage_sync_state WHERE key_id = ?').run(keyId);
-      this.db.prepare('DELETE FROM request_logs WHERE key_id = ?').run(keyId);
-      this.db.prepare('DELETE FROM monthly_quotas WHERE key_id = ?').run(keyId);
-      this.db.prepare('DELETE FROM api_keys WHERE id = ?').run(keyId);
-    });
-    deleteTransaction(id);
+    this.deleteApiKeys([id]);
+  }
+
+  deleteApiKeys(ids: number[], provider?: Provider): number[] {
+    const uniqueIds = [...new Set(ids)];
+    return this.db.transaction(() => {
+      // Validate the whole selection before deleting anything, including channel ownership.
+      const lookup = this.db.prepare('SELECT provider FROM api_keys WHERE id = ?');
+      for (const id of uniqueIds) {
+        const key = lookup.get(id) as { provider: Provider } | undefined;
+        if (!key || (provider && key.provider !== provider)) {
+          throw new Error('所选密钥已变化或不属于当前渠道，请刷新列表后重试');
+        }
+      }
+      const sync = this.db.prepare('DELETE FROM usage_sync_state WHERE key_id = ?');
+      const logs = this.db.prepare('UPDATE request_logs SET key_id = NULL WHERE key_id = ?');
+      const tasks = this.db.prepare('DELETE FROM upstream_tasks WHERE key_id = ?');
+      const quotas = this.db.prepare('DELETE FROM monthly_quotas WHERE key_id = ?');
+      const keys = this.db.prepare('DELETE FROM api_keys WHERE id = ?');
+      for (const id of uniqueIds) {
+        sync.run(id); logs.run(id); tasks.run(id); quotas.run(id);
+        this.exaBilling.deleteForKey(id);
+        keys.run(id);
+      }
+      return uniqueIds;
+    })();
   }
 
   resetKeyErrors(id: number): void {
     const now = toIsoString();
     this.db.prepare('UPDATE api_keys SET error_count = 0, last_error_message = NULL, updated_at = ? WHERE id = ?').run(now, id);
+  }
+
+  setKeyLastError(id: number, message: string): void {
+    this.db.prepare('UPDATE api_keys SET last_error_at=?,last_error_message=? WHERE id=?').run(toIsoString(),message.slice(0,500),id);
   }
 
   markKeySuccess(id: number): void {
@@ -512,8 +597,8 @@ export class AppDatabase {
     const now = toIsoString();
     this.db
       .prepare(`
-        INSERT INTO request_logs (key_id, tool_name, request_params, response_data, response_status, response_time_ms, error_type, error_message, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO request_logs (key_id, tool_name, request_params, response_data, response_status, response_time_ms, error_type, error_message, created_at, provider, cost_usd, cost_source)
+        VALUES ((SELECT id FROM api_keys WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         entry.key_id,
@@ -524,15 +609,17 @@ export class AppDatabase {
         entry.response_time_ms,
         entry.error_type,
         entry.error_message,
-        now
+        now,
+        entry.provider ?? 'tavily',
+        entry.cost_usd ?? null, entry.cost_source ?? null
       );
   }
 
   insertRequestLogs(entries: Array<Omit<RequestLogRecord, 'id' | 'created_at'>>): void {
     if (!entries.length) return;
     const insert = this.db.prepare(`
-      INSERT INTO request_logs (key_id, tool_name, request_params, response_data, response_status, response_time_ms, error_type, error_message, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO request_logs (key_id, tool_name, request_params, response_data, response_status, response_time_ms, error_type, error_message, created_at, provider, cost_usd, cost_source)
+      VALUES ((SELECT id FROM api_keys WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const now = toIsoString();
     const transaction = this.db.transaction((items: typeof entries) => {
@@ -546,7 +633,9 @@ export class AppDatabase {
           entry.response_time_ms,
           entry.error_type,
           entry.error_message,
-          now
+          now,
+          entry.provider ?? 'tavily',
+        entry.cost_usd ?? null, entry.cost_source ?? null
         );
       }
     });
@@ -562,9 +651,14 @@ export class AppDatabase {
     keyId?: number;
     status?: string;
     keyword?: string;
+    provider?: Provider;
+    includePayload?: boolean;
+    excludeMaintenance?: boolean;
   }): { total: number; logs: RequestLogRecord[] } {
     const filters: string[] = [];
     const values: Array<string | number> = [];
+    if (params.provider) { filters.push('provider = ?'); values.push(params.provider); }
+    if (params.excludeMaintenance) filters.push("tool_name NOT IN ('sync_quota', 'test', 'moderation')");
     if (params.startDate) {
       filters.push('created_at >= ?');
       values.push(params.startDate);
@@ -595,10 +689,13 @@ export class AppDatabase {
       .prepare(`SELECT COUNT(*) as count FROM request_logs ${where}`)
       .get(...values) as { count: number };
 
-    const offset = (params.page - 1) * params.limit;
+    const page = Number.isInteger(params.page) && params.page > 0 ? params.page : 1;
+    const limit = Number.isInteger(params.limit) && params.limit > 0 ? Math.min(params.limit, 100) : 20;
+    const offset = (page - 1) * limit;
+    const columns = params.includePayload === false ? 'id, key_id, provider, tool_name, response_status, response_time_ms, error_type, error_message, cost_usd, cost_source, created_at' : '*';
     const logs = this.db
-      .prepare(`SELECT * FROM request_logs ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
-      .all(...values, params.limit, offset) as RequestLogRecord[];
+      .prepare(`SELECT ${columns} FROM request_logs ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
+      .all(...values, limit, offset) as RequestLogRecord[];
     return { total: total.count, logs };
   }
 
@@ -620,7 +717,7 @@ export class AppDatabase {
       .prepare(`
         SELECT date(created_at) as date, COUNT(*) as count
         FROM request_logs
-        WHERE created_at >= ?
+        WHERE created_at >= ? AND tool_name NOT IN ('sync_quota', 'test', 'moderation')
         GROUP BY date(created_at)
         ORDER BY date ASC
       `)
@@ -651,6 +748,34 @@ export class AppDatabase {
     }, {});
   }
 
+  getReviewStats() {
+    return this.db.prepare(`SELECT COUNT(*) AS total,
+      COALESCE(SUM(CASE WHEN response_status = 'error' THEN 1 ELSE 0 END), 0) AS failed,
+      COALESCE(SUM(CASE WHEN json_valid(response_data) THEN json_extract(response_data, '$.removed') ELSE 0 END), 0) AS removed,
+      COALESCE(ROUND(AVG(response_time_ms)), 0) AS avg_ms
+      FROM request_logs WHERE tool_name = 'moderation'`).get();
+  }
+
+  transaction<T>(fn: () => T): T { return this.db.transaction(fn)(); }
+
+  setSecret(name: string, value: string): void {
+    this.setConfigValue(name, this.encryptKey(value));
+  }
+
+  getSecret(name: string): string {
+    const value = this.getConfigValue(name);
+    return value ? this.decryptKey(value) : '';
+  }
+
+  bindTask(provider: Provider, taskId: string, keyId: number): void {
+    this.db.prepare('INSERT OR REPLACE INTO upstream_tasks(provider, task_id, key_id, created_at) VALUES (?, ?, ?, ?)')
+      .run(provider, taskId, keyId, toIsoString());
+  }
+
+  getTaskKey(provider: Provider, taskId: string): number | null {
+    return (this.db.prepare('SELECT key_id FROM upstream_tasks WHERE provider = ? AND task_id = ?').get(provider, taskId) as any)?.key_id ?? null;
+  }
+
   private mapApiKey(row: any): ApiKeyRecord {
     let keyValue = '';
     try {
@@ -660,6 +785,9 @@ export class AppDatabase {
     }
     return {
       id: row.id,
+      provider: row.provider || 'tavily',
+      quota_reason: row.quota_reason ?? null,
+      quota_reset_at: row.quota_reset_at ?? null,
       key_hash: row.key_hash,
       key_value: keyValue,
       display_name: row.display_name,

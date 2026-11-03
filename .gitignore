@@ -78,3 +78,6 @@ web/src/components.d.ts
 
 # Development docs
 PRD.md
+
+# Consistent pre-upgrade SQLite snapshots
+data/backups/

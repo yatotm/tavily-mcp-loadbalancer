@@ -20,8 +20,8 @@ const emit = defineEmits<{
 }>();
 
 const navItems = [
-  { id: 'dashboard', label: '仪表盘', icon: Odometer },
-  { id: 'keys', label: 'API Key 管理', icon: Key },
+  { id: 'dashboard', label: '运行总览', icon: Odometer },
+  { id: 'keys', label: '密钥池', icon: Key },
   { id: 'stats', label: '使用统计', icon: TrendCharts },
   { id: 'logs', label: '请求日志', icon: Document },
   { id: 'settings', label: '系统设置', icon: Setting },
@@ -50,15 +50,16 @@ const connectionColor = computed(() => {
 <template>
   <aside class="sidebar" :class="{ collapsed }">
     <div class="brand">
-      <div class="logo-placeholder">T</div>
-      <span v-if="!collapsed" class="brand-name">Tavily LB</span>
+      <div class="logo-placeholder">S<span class="brand-dot">.</span></div>
+      <span v-if="!collapsed" class="brand-name">搜索网关</span>
     </div>
 
     <nav class="nav-menu">
       <a 
         v-for="item in navItems" 
         :key="item.id"
-        href="#"
+        :href="`#${item.id}`"
+        :aria-current="currentView === item.id ? 'page' : undefined"
         class="nav-item"
         :class="{ active: currentView === item.id }"
         @click.prevent="emit('update:currentView', item.id)"

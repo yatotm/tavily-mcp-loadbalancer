@@ -63,11 +63,12 @@ export class WebSocketHub {
   closeAll(): void {
     for (const socket of this.connections) {
       try {
-        socket.close(1001, 'Server shutting down');
+        socket.terminate();
       } catch {
         // ignore
       }
     }
+    this.wss?.close();
     this.connections.clear();
     this.connectionStore.setWs(0);
   }

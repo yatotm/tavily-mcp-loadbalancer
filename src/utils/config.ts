@@ -57,6 +57,9 @@ export const config = {
   nodeEnv: process.env.NODE_ENV || 'production',
   defaultParameters: parseDefaultParameters(),
   seedKeys: parseSeedKeys(),
+  exaSeedKeys: (process.env.EXA_API_KEYS || process.env.EXA_API_KEY || '').split(',').map(k => k.trim()).filter(Boolean),
+  logResponseBodies: parseBoolean(process.env.LOG_RESPONSE_BODIES, false),
+  maxQueuedRequests: 100,
 };
 
 export const assertConfig = (): void => {
